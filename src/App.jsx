@@ -13,9 +13,10 @@ const App = () => {
   const [errorMessage, setErrorMessage] = useState(null);
   const [imageProcessingTime, setImageProcessingTime] = useState(null);
   const [totalApiTime, setTotalApiTime] = useState(null);
-  const [status, setStatus] = useState("等待您的照片...");
+  const [status, setStatus] = useState("等待拍摄题目...");
   const [processedImage, setProcessedImage] = useState(null);
   const [history, setHistory] = useState([]);
+  const [countdown, setCountdown] = useState(null);
 
   // 历史记录分页
   const [displayedHistory, setDisplayedHistory] = useState([]);
@@ -44,14 +45,21 @@ const App = () => {
     {
       id: "gemini",
       name: "Gemini 2.5 Flash",
-      description: "Google 的高性能多模态模型",
+      description: "Google 的高性能题目解答模型",
       apiKeyLabel: "Google Gemini API Key",
       apiKeyPlaceholder: "输入你的 Gemini API Key",
     },
     {
-      id: "glm",
-      name: "智谱 GLM-4V-Flash",
-      description: "智谱AI的多模态大模型",
+      id: "glm_4v",
+      name: "智谱 GLM-4V-Plus (快速版)",
+      description: "智谱AI题目解答模型，响应速度快，适合日常练习",
+      apiKeyLabel: "智谱AI API Key",
+      apiKeyPlaceholder: "输入你的智谱AI API Key",
+    },
+    {
+      id: "glm_flashx",
+      name: "智谱 GLM-4.1V-FlashX (推理版)",
+      description: "智谱AI深度推理模型，准确度高，适合难题解答",
       apiKeyLabel: "智谱AI API Key",
       apiKeyPlaceholder: "输入你的智谱AI API Key",
     },
@@ -59,6 +67,17 @@ const App = () => {
 
   // 历史记录模态框状态
   const [showHistoryModal, setShowHistoryModal] = useState(false);
+
+  // 当前记录ID（用于更新验证结果）
+  const [currentRecordId, setCurrentRecordId] = useState(null);
+
+  // 并发分析结果状态
+  const [concurrentResults, setConcurrentResults] = useState([]);
+  const [analysisProgress, setAnalysisProgress] = useState([]);
+  const [consistencyResult, setConsistencyResult] = useState(null);
+
+  // 并发分析配置
+  const [concurrentCount, setConcurrentCount] = useState(3); // 默认3次并发
 
   const startTimeRef = useRef(null);
   const imageProcessingStartRef = useRef(null);
@@ -111,11 +130,30 @@ const App = () => {
 
       // 获取存储的 API Key (基于选择的模型)
       const currentModel = storedModel || "gemini";
+
+      // 智谱相关模型共享API Key
+      let keyModelId = currentModel;
+      if (currentModel === "glm_flashx" || currentModel === "glm_4v") {
+        keyModelId = "glm"; // 智谱模型共享API Key
+      }
+
       const storedApiKey = localStorage.getItem(
-        `visionLens_apiKey_${currentModel}`
+        `visionLens_apiKey_${keyModelId}`
       );
       if (storedApiKey) {
         setApiKey(storedApiKey);
+      }
+
+      // 获取存储的并发数配置
+      const storedConcurrentCount = localStorage.getItem(
+        "visionLens_concurrentCount"
+      );
+      if (storedConcurrentCount) {
+        const count = parseInt(storedConcurrentCount, 10);
+        if (count >= 1 && count <= 5) {
+          // 限制在1-5次之间
+          setConcurrentCount(count);
+        }
       }
 
       // 初始化数据库
@@ -131,11 +169,19 @@ const App = () => {
       setApiKey(apiKeyInput.trim());
       // 保存模型选择
       localStorage.setItem("visionLens_selectedModel", selectedModel);
+
+      // 智谱相关模型共享API Key
+      let keyModelId = selectedModel;
+      if (selectedModel === "glm_flashx" || selectedModel === "glm_4v") {
+        keyModelId = "glm"; // 智谱模型共享API Key
+      }
+
       // 保存对应模型的 API Key
       localStorage.setItem(
-        `visionLens_apiKey_${selectedModel}`,
+        `visionLens_apiKey_${keyModelId}`,
         apiKeyInput.trim()
       );
+
       setShowApiKeyModal(false);
       setApiKeyInput("");
     }
@@ -143,15 +189,30 @@ const App = () => {
 
   const handleModelChange = (modelId) => {
     setSelectedModel(modelId);
+
+    // 智谱相关模型共享API Key
+    let keyModelId = modelId;
+    if (modelId === "glm_flashx" || modelId === "glm_4v") {
+      keyModelId = "glm"; // 智谱模型共享API Key
+    }
+
     // 加载对应模型的 API Key
-    const storedApiKey = localStorage.getItem(`visionLens_apiKey_${modelId}`);
+    const storedApiKey = localStorage.getItem(
+      `visionLens_apiKey_${keyModelId}`
+    );
     setApiKey(storedApiKey || "");
     setApiKeyInput(storedApiKey || "");
   };
 
   const handleOpenApiKeyModal = () => {
+    // 智谱相关模型共享API Key
+    let keyModelId = selectedModel;
+    if (selectedModel === "glm_flashx" || selectedModel === "glm_4v") {
+      keyModelId = "glm"; // 智谱模型共享API Key
+    }
+
     const currentApiKey =
-      localStorage.getItem(`visionLens_apiKey_${selectedModel}`) || "";
+      localStorage.getItem(`visionLens_apiKey_${keyModelId}`) || "";
     setApiKeyInput(currentApiKey);
     setShowApiKeyModal(true);
   };
@@ -212,22 +273,63 @@ const App = () => {
     if (!db || !userId) return;
 
     try {
+      // 确保answer数据格式正确保存
+      let answerToSave = answer;
+      if (typeof answer === "object" && answer.question && answer.answer) {
+        // 保持JSON格式用于后续解析
+        answerToSave = answer;
+      }
+
       const record = {
         userId,
         processedImage: `data:image/jpeg;base64,${imageData}`,
-        answer,
+        answer: answerToSave,
         createdAt: new Date().toISOString(),
       };
 
       const tx = db.transaction("history", "readwrite");
       const store = tx.objectStore("history");
-      await store.add(record);
+      const result = await store.add(record);
+      await tx.complete;
+
+      // 重新加载历史记录
+      await loadHistory();
+
+      // 返回新记录的ID，用于后续更新
+      return result;
+    } catch (error) {
+      console.error("保存历史记录失败:", error);
+      return null;
+    }
+  };
+
+  // === 更新历史记录 ===
+  const updateHistoryRecord = async (recordId, updatedAnswer) => {
+    if (!db || !userId || !recordId) return;
+
+    try {
+      const tx = db.transaction("history", "readwrite");
+      const store = tx.objectStore("history");
+
+      // 获取现有记录
+      const existingRecord = await store.get(recordId);
+      if (!existingRecord) {
+        console.warn("未找到要更新的历史记录:", recordId);
+        return;
+      }
+
+      // 更新答案字段
+      existingRecord.answer = updatedAnswer;
+      existingRecord.updatedAt = new Date().toISOString();
+
+      // 保存更新后的记录
+      await store.put(existingRecord);
       await tx.complete;
 
       // 重新加载历史记录
       await loadHistory();
     } catch (error) {
-      console.error("保存历史记录失败:", error);
+      console.error("更新历史记录失败:", error);
     }
   };
 
@@ -262,23 +364,6 @@ const App = () => {
       isFirefox: /firefox/i.test(userAgent),
       isEdge: /edge/i.test(userAgent),
     };
-
-    // 详细的环境信息打印（仅在初始化时打印，避免重复）
-    if (cameraStatus === "initializing" || !cameraStatus) {
-      console.log("🔍 环境检测信息:");
-      console.log("- 微信环境:", isWeChat);
-      console.log("- 移动端:", isMobile);
-      console.log("- HTTPS:", isHTTPS);
-      console.log("- 本地环境:", isLocalhost);
-      console.log("- 摄像头API支持:", supportsCameraAPI);
-      console.log("- navigator.mediaDevices:", !!navigator.mediaDevices);
-      console.log("- getUserMedia:", !!navigator.mediaDevices?.getUserMedia);
-      console.log("- 浏览器信息:", browserInfo);
-      console.log("- 用户代理:", userAgent);
-      console.log("- 设备像素比:", window.devicePixelRatio);
-      console.log("- 屏幕尺寸:", `${screen.width}x${screen.height}`);
-      console.log("- 视窗尺寸:", `${window.innerWidth}x${window.innerHeight}`);
-    }
 
     return {
       isWeChat,
@@ -341,23 +426,11 @@ const App = () => {
     );
 
     try {
-      console.log("📞 调用 navigator.mediaDevices.getUserMedia...");
       const stream = await navigator.mediaDevices.getUserMedia(constraint);
-      console.log("✅ getUserMedia 成功，获得 stream:", stream);
-      console.log(
-        "📺 stream tracks:",
-        stream.getTracks().map((track) => ({
-          kind: track.kind,
-          label: track.label,
-          enabled: track.enabled,
-          readyState: track.readyState,
-        }))
-      );
 
       // 设置视频流
       setVideoStream(stream);
       if (videoRef.current) {
-        console.log("🎬 设置 video.srcObject...");
         videoRef.current.srcObject = stream;
 
         // 等待视频就绪 - 优化事件处理，避免内存泄漏
@@ -390,12 +463,7 @@ const App = () => {
           const handleLoadedMetadata = () => {
             if (!isResolved) {
               isResolved = true;
-              console.log("✅ 视频元素 loadedmetadata 事件触发");
-              console.log("📐 视频尺寸:", {
-                videoWidth: video.videoWidth,
-                videoHeight: video.videoHeight,
-                duration: video.duration,
-              });
+
               cleanup();
               resolve(stream);
             }
@@ -456,7 +524,6 @@ const App = () => {
 
     if (env.isWeChat) {
       // 微信环境特殊检查
-      console.log("检测到微信环境，使用兼容模式");
     }
 
     return env;
@@ -466,7 +533,6 @@ const App = () => {
   const initializeCamera = async (isRetry = false) => {
     // 使用 ref 避免竞态条件
     if (isInitializingRef.current) {
-      console.log("⚠️ 摄像头正在初始化中，跳过重复调用");
       return;
     }
 
@@ -475,12 +541,6 @@ const App = () => {
     try {
       // 环境检查
       const env = checkEnvironmentCompatibility();
-      console.log("🚀 开始摄像头初始化...", {
-        isRetry,
-        env,
-        currentRetryCount: retryCount,
-        timestamp: new Date().toISOString(),
-      });
 
       setCameraStatus(isRetry ? "retrying" : "initializing");
       setCameraError(null);
@@ -493,7 +553,6 @@ const App = () => {
 
       // 停止现有流
       if (videoStream) {
-        console.log("🛑 停止现有视频流...");
         videoStream.getTracks().forEach((track) => track.stop());
         setVideoStream(null);
       }
@@ -512,7 +571,6 @@ const App = () => {
 
       // 检查组件是否已卸载
       if (!isInitializingRef.current) {
-        console.log("⚠️ 组件已卸载，停止初始化");
         if (stream) {
           stream.getTracks().forEach((track) => track.stop());
         }
@@ -520,17 +578,15 @@ const App = () => {
       }
 
       setCameraStatus("success");
-      setStatus("已就绪，等待您的照片...");
+      setStatus("已就绪，等待拍摄题目...");
       setRetryCount(0);
       currentRetryRef.current = 0;
       setIsManualRetry(false);
-      console.log("🎉 摄像头初始化成功！");
     } catch (error) {
       console.error("❌ 摄像头初始化失败:", error);
 
       // 检查组件是否已卸载
       if (!isInitializingRef.current) {
-        console.log("⚠️ 组件已卸载，停止错误处理");
         return;
       }
 
@@ -544,18 +600,16 @@ const App = () => {
       if (!isManualRetry && currentRetryRef.current < MAX_RETRY_COUNT) {
         const nextRetryCount = currentRetryRef.current + 1;
         currentRetryRef.current = nextRetryCount;
-        console.log(`⏰ 将在2秒后进行第 ${nextRetryCount} 次重试...`);
 
         setTimeout(() => {
-          // 检查组件是否已卸载和状态是否仍然为失败
-          if (isInitializingRef.current && cameraStatus === "failed") {
+          // 简化检查逻辑，只检查组件是否已卸载
+          if (isInitializingRef.current) {
             setRetryCount(nextRetryCount);
             isInitializingRef.current = false; // 重置标志
             initializeCamera(true);
           }
         }, 2000);
       } else {
-        console.log("❌ 达到最大重试次数或手动重试，停止自动重试");
         currentRetryRef.current = 0;
       }
     } finally {
@@ -655,8 +709,6 @@ const App = () => {
 
   // === 手动重试摄像头 ===
   const handleRetryCamera = () => {
-    console.log("🔄 用户手动重试摄像头...");
-
     // 停止任何正在进行的初始化
     if (videoStream) {
       videoStream.getTracks().forEach((track) => track.stop());
@@ -716,18 +768,14 @@ const App = () => {
 
   // === 摄像头和拍照逻辑 ===
   useEffect(() => {
-    console.log("🔧 组件挂载，开始初始化摄像头...");
     initializeCamera();
 
     return () => {
-      console.log("🔧 组件即将卸载，清理资源...");
-
       // 停止初始化标志
       isInitializingRef.current = false;
       currentRetryRef.current = 0;
 
       if (videoStream) {
-        console.log("🛑 清理视频流...");
         videoStream.getTracks().forEach((track) => track.stop());
       }
 
@@ -742,6 +790,59 @@ const App = () => {
     };
   }, []);
 
+  // === 学术题目分析Prompt ===
+  const AI_ANALYSIS_PROMPT = `你是一位学术题目解答专家，专门解答各类学科题目。请直接分析图片中的题目并给出准确答案，不要输出任何思考过程或观察标记。
+
+重要：禁止输出以下内容：
+- 任何尖括号标记（如 observation、thinking、reflection 等）
+- 思考过程、观察过程、分析步骤
+- 代码块标记
+- 任何非JSON内容
+
+专注识别以下题目类型：
+
+🔹 填空题处理（核心重点）：
+- 精准识别空格、下划线、括号等填空标记：____、___、__、(  )、（）
+- 根据上下文和学科知识确定填空内容
+- 答案必须简短精确：单词、术语、数字、概念
+- 绝不给出解释，只给出要填入的精确内容
+
+🔹 选择题处理：
+- 识别题干和选项A、B、C、D等
+- 分析各选项，给出正确答案
+- 格式：选项字母+内容
+
+🔹 计算题处理：
+- 数学、物理、化学计算题
+- 给出最终数值答案
+- 包含单位（如适用）
+
+🔹 问答题处理：
+- 语文、历史、地理、生物等学科问答
+- 简洁准确回答要点
+- 避免冗长解释
+
+🔹 文字识别：
+- 古诗词、文言文、外语等文字内容
+- 准确识别并回答相关问题
+
+输出要求：
+只能输出标准JSON格式，不要任何额外内容：
+{"question": "问题内容", "answer": "答案内容"}
+
+示例：
+填空题："水的化学分子式是____" 输出 {"question": "水的化学分子式是什么？", "answer": "H₂O"}
+选择题："1+1=? A.1 B.2 C.3" 输出 {"question": "1+1等于多少？", "answer": "B.2"}
+计算题："3×4=" 输出 {"question": "3×4等于多少？", "answer": "12"}
+语文题："《静夜思》的作者是谁？" 输出 {"question": "《静夜思》的作者是谁？", "answer": "李白"}
+
+记住：
+- 专注学术题目，忽略非题目内容
+- 填空题答案要极其精确简洁
+- 数学题给出数值答案
+- 文科题给出关键要点
+- 只输出JSON格式，答案准确有效`;
+
   // === API 调用函数 ===
   // 调用 Gemini API
   const callGeminiAPI = async (imageData) => {
@@ -751,7 +852,7 @@ const App = () => {
           role: "user",
           parts: [
             {
-              text: "请根据图片内容回答百科问题，只返回问题和答案",
+              text: AI_ANALYSIS_PROMPT,
             },
             {
               inlineData: {
@@ -780,18 +881,130 @@ const App = () => {
     return data.candidates?.[0]?.content?.parts?.[0]?.text || "未能获取答案。";
   };
 
-  // 调用智谱 GLM API
-  const callGLMAPI = async (imageData) => {
-    // 智谱 GLM API 调用逻辑
+  // 统一处理智谱API响应的函数
+  const parseGLMResponse = (data, modelName) => {
+    const content = data.choices?.[0]?.message?.content || "未能获取答案。";
+
+    // 尝试解析JSON格式响应
+    try {
+      // 清理可能的标记符和多余内容
+      let cleanContent = content
+        // 移除智谱模型的观察标记
+        .replace(/<\|observation\|>/g, "")
+        .replace(/<\|thinking\|>/g, "")
+        .replace(/<\|\/thinking\|>/g, "")
+        .replace(/<\|reflection\|>/g, "")
+        .replace(/<\|\/reflection\|>/g, "")
+        // 移除各种box标记符
+        .replace(/<\|begin_of_box\|>/g, "")
+        .replace(/<\|end_of_box\|>/g, "")
+        .replace(/<\|box_start\|>/g, "")
+        .replace(/<\|box_end\|>/g, "")
+        // 移除代码块标记
+        .replace(/```json\s*/g, "")
+        .replace(/```\s*/g, "")
+        // 移除可能的开始/结束标记
+        .replace(/^.*?begin.*?\n?/i, "")
+        .replace(/\n?.*?end.*?$/i, "")
+        // 提取JSON部分 - 查找第一个 { 到最后一个 }
+        .replace(/^[^{]*/, "")
+        .replace(/[^}]*$/, "")
+        .trim();
+
+      // 修复JSON中的引号问题
+      cleanContent = cleanContent
+        // 将中文双引号替换为英文双引号
+        .replace(/"/g, '"')
+        .replace(/"/g, '"');
+
+      // 尝试修复JSON字符串中的引号嵌套问题
+      try {
+        // 如果直接解析失败，尝试提取和重构JSON
+        JSON.parse(cleanContent);
+      } catch (e) {
+        // 尝试用正则提取question和answer的值
+        const questionMatch = cleanContent.match(
+          /"question"\s*:\s*"(.*?)(?=",\s*"answer")/s
+        );
+        const answerMatch = cleanContent.match(
+          /"answer"\s*:\s*"(.*?)(?="\s*})/s
+        );
+
+        if (questionMatch && answerMatch) {
+          let question = questionMatch[1];
+          let answer = answerMatch[1];
+
+          // 清理question和answer中的多余引号
+          question = question
+            .replace(/^[""]/, "")
+            .replace(/[""]$/, "")
+            .replace(/\\"/g, '"');
+          answer = answer
+            .replace(/^[""]/, "")
+            .replace(/[""]$/, "")
+            .replace(/\\"/g, '"');
+
+          // 重新构造正确的JSON
+          cleanContent = JSON.stringify({
+            question: question,
+            answer: answer,
+          });
+        }
+      }
+
+      // 如果还没找到有效的JSON格式，尝试用正则提取
+      if (!cleanContent.startsWith("{") || !cleanContent.endsWith("}")) {
+        // 更强大的JSON提取正则，能处理嵌套和复杂情况
+        const jsonMatches = [
+          // 标准JSON格式
+          /\{[^{}]*?"question"[^{}]*?"answer"[^{}]*?\}/s,
+          // 带换行的JSON格式
+          /\{[\s\S]*?"question"[\s\S]*?"answer"[\s\S]*?\}/,
+          // 最宽松的匹配
+          /\{.*?"question".*?"answer".*?\}/s,
+        ];
+
+        for (const regex of jsonMatches) {
+          const match = content.match(regex);
+          if (match) {
+            cleanContent = match[0];
+            break;
+          }
+        }
+      }
+
+      const jsonResponse = JSON.parse(cleanContent);
+      if (jsonResponse.question && jsonResponse.answer) {
+        return jsonResponse;
+      }
+    } catch (error) {
+      // 如果解析失败，检查是否只有标记符
+      console.warn("JSON解析失败，原始内容:", content);
+    }
+
+    // 如果内容只是观察标记或空白，返回错误信息
+    const strippedContent = content.replace(/<\|[^|]*\|>/g, "").trim();
+    if (!strippedContent || strippedContent.length < 10) {
+      return {
+        question: "模型响应异常",
+        answer: "模型只返回了观察标记，请尝试重新拍照或切换其他模型",
+      };
+    }
+
+    return content;
+  };
+
+  // 调用智谱 GLM-4V API (快速版)
+  const callGLM4VAPI = async (imageData) => {
     const payload = {
-      model: "glm-4.5v",
+      model: "glm-4v-plus", // GLM-4V-Plus 多模态版本
       messages: [
         {
           role: "user",
           content: [
             {
               type: "text",
-              text: "请根据图片内容回答百科问题，只返回问题和答案。不需要返回选项。从选项中选择正确的答案",
+              text: AI_ANALYSIS_PROMPT,
             },
             {
               type: "image_url",
@@ -802,8 +1015,7 @@ const App = () => {
           ],
         },
       ],
-      temperature: 0.7,
-      max_tokens: 1024,
+      temperature: 0.4,
     };
 
     const API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
@@ -820,29 +1032,1053 @@ const App = () => {
     if (!response.ok) {
       const errorText = await response.text();
       throw new Error(
-        `智谱 GLM API 调用失败! Status: ${response.status}, Error: ${errorText}`
+        `智谱 GLM-4V-Plus API 调用失败 (model: glm-4v-plus)! Status: ${response.status}, Error: ${errorText}`
       );
     }
 
     const data = await response.json();
-    return data.choices?.[0]?.message?.content || "未能获取答案。";
+    return parseGLMResponse(data, "GLM-4V");
   };
 
-  // 根据选择的模型调用对应的 API
+  // 调用智谱 GLM-4.1V-FlashX API (推理版)
+  const callGLMFlashXAPI = async (imageData) => {
+    const payload = {
+      model: "glm-4.1v-thinking-flashx", // 推理版本
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: AI_ANALYSIS_PROMPT,
+            },
+            {
+              type: "image_url",
+              image_url: {
+                url: `data:image/jpeg;base64,${imageData}`,
+              },
+            },
+          ],
+        },
+      ],
+      temperature: 0.4,
+    };
+
+    const API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
+
+    const response = await fetch(API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(
+        `智谱 GLM-4.1V-FlashX API 调用失败 (model: glm-4.1v-thinking-flashx)! Status: ${response.status}, Error: ${errorText}`
+      );
+    }
+
+    const data = await response.json();
+    return parseGLMResponse(data, "GLM-4.1V-FlashX");
+  };
+
+  // 创建超时Promise
+  const createTimeoutPromise = (timeout = 8000) => {
+    return new Promise((_, reject) => {
+      setTimeout(() => {
+        reject(new Error("API调用超时，请求已取消"));
+      }, timeout);
+    });
+  };
+
+  // 并发分析同一张图片 - 实时显示结果
+  const performConcurrentAnalysis = async (imageData) => {
+    // 根据配置初始化进度状态
+    const initialProgress = Array.from(
+      { length: concurrentCount },
+      (_, index) => ({
+        id: index + 1,
+        status: "starting",
+        progress: 0,
+        result: null,
+        error: null,
+        timeSpent: null,
+      })
+    );
+    setAnalysisProgress(initialProgress);
+    setConcurrentResults([]);
+    setConsistencyResult(null);
+
+    // 用于跟踪已完成的结果
+    const completedResults = [];
+    let completedCount = 0;
+
+    // 创建指定数量的独立分析任务 - 不等待全部完成
+    const analysisPromises = Array.from(
+      { length: concurrentCount },
+      async (_, index) => {
+        const id = index + 1;
+        const startTime = performance.now();
+
+        try {
+          // 更新状态为进行中
+          setAnalysisProgress((prev) =>
+            prev.map((item) =>
+              item.id === id
+                ? { ...item, status: "analyzing", progress: 50 }
+                : item
+            )
+          );
+
+          const result = await callAIAPI(imageData);
+          const endTime = performance.now();
+          const timeSpent = ((endTime - startTime) / 1000).toFixed(2);
+
+          const taskResult = { id, result, timeSpent, error: null };
+
+          // 立即更新进度状态
+          setAnalysisProgress((prev) =>
+            prev.map((item) =>
+              item.id === id
+                ? {
+                    ...item,
+                    status: "completed",
+                    progress: 100,
+                    result: result,
+                    timeSpent: timeSpent,
+                  }
+                : item
+            )
+          );
+
+          // 立即更新并发结果 - 不等待其他任务
+          completedResults.push(taskResult);
+          completedCount++;
+
+          setConcurrentResults([...completedResults]);
+
+          // 实时更新一致性分析
+          const currentConsistency = analyzeConsistency([...completedResults]);
+          setConsistencyResult(currentConsistency);
+
+          // 实时更新UI答案显示
+          setAnswer({
+            type: "concurrent_analysis",
+            results: [...completedResults],
+            consistency: currentConsistency,
+            analysisProgress: analysisProgress,
+          });
+
+          // 更新状态显示
+          setStatus(
+            `🎯 已完成 ${completedCount}/${concurrentCount} 次解答验证`
+          );
+
+          return taskResult;
+        } catch (error) {
+          const endTime = performance.now();
+          const timeSpent = ((endTime - startTime) / 1000).toFixed(2);
+
+          const taskResult = {
+            id,
+            result: null,
+            timeSpent,
+            error: error.message,
+          };
+
+          // 立即更新进度状态为错误
+          setAnalysisProgress((prev) =>
+            prev.map((item) =>
+              item.id === id
+                ? {
+                    ...item,
+                    status: "error",
+                    progress: 100,
+                    error: error.message,
+                    timeSpent: timeSpent,
+                  }
+                : item
+            )
+          );
+
+          // 即使失败也要立即更新结果
+          completedResults.push(taskResult);
+          completedCount++;
+
+          setConcurrentResults([...completedResults]);
+
+          // 实时更新一致性分析（包含错误）
+          const currentConsistency = analyzeConsistency([...completedResults]);
+          setConsistencyResult(currentConsistency);
+
+          // 实时更新UI答案显示（包含失败结果）
+          setAnswer({
+            type: "concurrent_analysis",
+            results: [...completedResults],
+            consistency: currentConsistency,
+            analysisProgress: analysisProgress,
+          });
+
+          // 更新状态显示
+          setStatus(
+            `🎯 已完成 ${completedCount}/${concurrentCount} 次解答验证 (含失败)`
+          );
+
+          return taskResult;
+        }
+      }
+    );
+
+    // 等待所有分析完成（用于最终处理，但不阻塞UI更新）
+    try {
+      const allResults = await Promise.all(analysisPromises);
+
+      // 最终更新状态
+      const finalConsistency = analyzeConsistency(allResults);
+      setConsistencyResult(finalConsistency);
+      setStatus(`🎯 并发分析完成！一致性：${finalConsistency.message}`);
+
+      return { results: allResults, consistency: finalConsistency };
+    } catch (error) {
+      // 如果有未捕获的错误，也要保证返回当前结果
+      const finalConsistency = analyzeConsistency(completedResults);
+      setConsistencyResult(finalConsistency);
+      setStatus(`🎯 分析完成（部分失败）！一致性：${finalConsistency.message}`);
+
+      return { results: completedResults, consistency: finalConsistency };
+    }
+  };
+
+  // 分析结果的一致性（支持实时部分结果）
+  const analyzeConsistency = (results) => {
+    const validResults = results.filter((r) => r.result && !r.error);
+    const totalCount = results.length;
+    const successCount = validResults.length;
+    const failedCount = totalCount - successCount;
+
+    // 如果还没有任何结果
+    if (totalCount === 0) {
+      return {
+        type: "waiting",
+        color: "gray",
+        message: "等待分析结果...",
+        matches: [],
+        totalCount,
+        successCount,
+        failedCount,
+      };
+    }
+
+    // 如果所有已完成的都失败了
+    if (validResults.length === 0) {
+      return {
+        type: "all_failed",
+        color: "red",
+        message:
+          totalCount < concurrentCount
+            ? `${failedCount}/${totalCount} 分析失败`
+            : `${concurrentCount}次分析都失败了`,
+        matches: [],
+        totalCount,
+        successCount,
+        failedCount,
+      };
+    }
+
+    // 如果只有一次成功（且总数可能还在增长）
+    if (validResults.length === 1) {
+      return {
+        type: "only_one_success",
+        color: totalCount < concurrentCount ? "yellow" : "red",
+        message:
+          totalCount < concurrentCount
+            ? `1/${totalCount} 分析成功，其他进行中...`
+            : "只有一次分析成功",
+        matches: [],
+        totalCount,
+        successCount,
+        failedCount,
+      };
+    }
+
+    // 提取答案进行比较
+    const answers = validResults.map((r) => {
+      if (typeof r.result === "object" && r.result.answer) {
+        return r.result.answer.toLowerCase().trim();
+      } else if (typeof r.result === "string") {
+        // 尝试从字符串中提取答案
+        const answerMatch = r.result.match(/答案[：:\s]*([^。！？\n]+)/i);
+        if (answerMatch) {
+          return answerMatch[1].toLowerCase().trim();
+        }
+        return r.result.toLowerCase().trim();
+      }
+      return "";
+    });
+
+    // 计算相似度和匹配
+    const matches = [];
+    for (let i = 0; i < answers.length; i++) {
+      for (let j = i + 1; j < answers.length; j++) {
+        const similarity = calculateSimilarity(answers[i], answers[j]);
+        if (similarity > 0.8) {
+          // 80%相似度认为匹配
+          matches.push({
+            ids: [validResults[i].id, validResults[j].id],
+            similarity: similarity,
+            answer: answers[i],
+          });
+        }
+      }
+    }
+
+    // 分析一致性类型（支持实时部分结果）
+    if (validResults.length === concurrentCount) {
+      // 全部都成功
+      if (matches.length >= 2) {
+        // 检查是否三个都匹配
+        const allMatch =
+          matches.some((m) => m.similarity > 0.9) &&
+          answers.every((a) => calculateSimilarity(a, answers[0]) > 0.8);
+        if (allMatch) {
+          return {
+            type: "all_consistent",
+            color: "green",
+            message: `${concurrentCount}次结果完全一致`,
+            matches: matches,
+            validResults: validResults,
+            totalCount,
+            successCount,
+            failedCount,
+          };
+        } else {
+          return {
+            type: "two_consistent",
+            color: "yellow",
+            message: "两次结果一致",
+            matches: matches,
+            validResults: validResults,
+            totalCount,
+            successCount,
+            failedCount,
+          };
+        }
+      } else {
+        return {
+          type: "all_different",
+          color: "red",
+          message: `${concurrentCount}次结果都不一致`,
+          matches: matches,
+          validResults: validResults,
+          totalCount,
+          successCount,
+          failedCount,
+        };
+      }
+    } else if (validResults.length === 2) {
+      // 两次成功
+      if (matches.length > 0) {
+        return {
+          type: "two_consistent",
+          color: totalCount < concurrentCount ? "green" : "yellow", // 如果还在进行中，暂时显示绿色
+          message:
+            totalCount < concurrentCount
+              ? `两次结果一致，等待其他${concurrentCount - totalCount}次...`
+              : "两次成功且结果一致",
+          matches: matches,
+          validResults: validResults,
+          totalCount,
+          successCount,
+          failedCount,
+        };
+      } else {
+        return {
+          type: "two_different",
+          color: "red",
+          message:
+            totalCount < concurrentCount
+              ? `两次结果不一致，等待其他${concurrentCount - totalCount}次...`
+              : "两次成功但结果不一致",
+          matches: matches,
+          validResults: validResults,
+          totalCount,
+          successCount,
+          failedCount,
+        };
+      }
+    }
+
+    return {
+      type: "uncertain",
+      color: "gray",
+      message:
+        totalCount < concurrentCount ? "分析进行中..." : "无法确定一致性",
+      matches: matches,
+      validResults: validResults,
+      totalCount,
+      successCount,
+      failedCount,
+    };
+  };
+
+  // 计算两个字符串的相似度
+  const calculateSimilarity = (str1, str2) => {
+    if (!str1 || !str2) return 0;
+
+    // 简单的相似度计算：基于编辑距离
+    const maxLength = Math.max(str1.length, str2.length);
+    if (maxLength === 0) return 1;
+
+    const distance = levenshteinDistance(str1, str2);
+    return (maxLength - distance) / maxLength;
+  };
+
+  // 计算编辑距离
+  const levenshteinDistance = (str1, str2) => {
+    const matrix = [];
+
+    for (let i = 0; i <= str2.length; i++) {
+      matrix[i] = [i];
+    }
+
+    for (let j = 0; j <= str1.length; j++) {
+      matrix[0][j] = j;
+    }
+
+    for (let i = 1; i <= str2.length; i++) {
+      for (let j = 1; j <= str1.length; j++) {
+        if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
+          matrix[i][j] = matrix[i - 1][j - 1];
+        } else {
+          matrix[i][j] = Math.min(
+            matrix[i - 1][j - 1] + 1,
+            matrix[i][j - 1] + 1,
+            matrix[i - 1][j] + 1
+          );
+        }
+      }
+    }
+
+    return matrix[str2.length][str1.length];
+  };
+
+  // 根据选择的模型调用对应的 API，带超时机制
   const callAIAPI = async (imageData) => {
-    switch (selectedModel) {
-      case "gemini":
-        return await callGeminiAPI(imageData);
-      case "glm":
-        return await callGLMAPI(imageData);
-      default:
-        throw new Error("未知的模型类型");
+    const apiCall = async () => {
+      switch (selectedModel) {
+        case "gemini":
+          return await callGeminiAPI(imageData);
+        case "glm_4v":
+          return await callGLM4VAPI(imageData);
+        case "glm_flashx":
+          return await callGLMFlashXAPI(imageData);
+        default:
+          throw new Error(`未知的模型类型: ${selectedModel}`);
+      }
+    };
+
+    // 使用Promise.race实现8秒超时机制
+    try {
+      const result = await Promise.race([
+        apiCall(),
+        createTimeoutPromise(8000),
+      ]);
+
+      return result;
+    } catch (error) {
+      if (error.message.includes("超时")) {
+        throw new Error("请求超时：AI服务响应时间过长，请稍后重试");
+      }
+      throw error;
     }
   };
 
   // === AI回复解析和高亮函数 ===
-  const parseAndHighlightAnswer = (text, isCompact = false) => {
-    if (!text) return null;
+  const parseAndHighlightAnswer = (responseData, isCompact = false) => {
+    if (!responseData) return null;
+
+    // 处理并发分析结果
+    if (
+      typeof responseData === "object" &&
+      responseData.type === "concurrent_analysis"
+    ) {
+      const { results, consistency } = responseData;
+
+      // 获取一致性对应的颜色类名
+      const getConsistencyColorClass = (color) => {
+        switch (color) {
+          case "green":
+            return {
+              bg: "bg-gradient-to-br from-green-400 via-emerald-500 to-teal-600",
+              border: "border-green-300",
+              text: "text-white",
+              badge: "bg-green-100 text-green-800 border-green-300",
+            };
+          case "yellow":
+            return {
+              bg: "bg-gradient-to-br from-yellow-400 via-orange-500 to-amber-600",
+              border: "border-yellow-300",
+              text: "text-white",
+              badge: "bg-yellow-100 text-yellow-800 border-yellow-300",
+            };
+          case "red":
+            return {
+              bg: "bg-gradient-to-br from-red-400 via-pink-500 to-rose-600",
+              border: "border-red-300",
+              text: "text-white",
+              badge: "bg-red-100 text-red-800 border-red-300",
+            };
+          case "gray":
+            return {
+              bg: "bg-gradient-to-br from-blue-400 via-indigo-500 to-purple-600",
+              border: "border-blue-300",
+              text: "text-white",
+              badge: "bg-blue-100 text-blue-800 border-blue-300",
+            };
+          default:
+            return {
+              bg: "bg-gradient-to-br from-gray-400 via-gray-500 to-gray-600",
+              border: "border-gray-300",
+              text: "text-white",
+              badge: "bg-gray-100 text-gray-800 border-gray-300",
+            };
+        }
+      };
+
+      const colorClass = getConsistencyColorClass(consistency.color);
+
+      if (isCompact) {
+        // 紧凑模式：用于历史记录
+        return (
+          <div className={`px-3 py-2 rounded-lg border-2 ${colorClass.badge}`}>
+            <div className="text-xs font-bold mb-2 flex items-center">
+              <span className="mr-1">🚀</span>
+              并发分析 ({consistency.message})
+            </div>
+            <div className="space-y-1">
+              {results.slice(0, 2).map((result) => (
+                <div
+                  key={result.id}
+                  className="bg-white bg-opacity-50 px-2 py-1 rounded text-xs"
+                >
+                  <div className="font-medium flex items-center justify-between">
+                    <span>分析 #{result.id}</span>
+                    {result.timeSpent && (
+                      <span className="text-gray-600">
+                        ⏱️{result.timeSpent}s
+                      </span>
+                    )}
+                  </div>
+                  {result.error ? (
+                    <div className="text-red-600 text-xs">
+                      ❌ {result.error}
+                    </div>
+                  ) : (
+                    <div className="text-gray-700 text-xs">
+                      {/* 紧凑模式下也完整显示答案 */}
+                      <div className="font-medium text-green-800 mb-1">
+                        答案:
+                      </div>
+                      <div className="font-semibold text-gray-900">
+                        {result.result?.answer ||
+                          (typeof result.result === "string"
+                            ? result.result
+                            : "无结果")}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+              {results.length > 2 && (
+                <div className="text-xs text-gray-600 text-center">
+                  ... 还有 {results.length - 2} 个结果
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      } else {
+        // 完整模式：用于主界面
+        return (
+          <div className="space-y-6">
+            {/* 一致性总结卡片 */}
+            <div
+              className={`relative p-6 rounded-2xl border-3 shadow-2xl ${colorClass.bg} ${colorClass.border}`}
+            >
+              <div className="absolute inset-0 bg-white bg-opacity-20 rounded-2xl"></div>
+              <div className="relative z-10">
+                <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between mb-4">
+                  <h2
+                    className={`text-2xl lg:text-3xl font-bold ${colorClass.text} flex items-center mb-2 lg:mb-0`}
+                  >
+                    <span className="mr-3 text-3xl">
+                      {consistency.color === "green"
+                        ? "✅"
+                        : consistency.color === "yellow"
+                        ? "⚠️"
+                        : consistency.color === "gray"
+                        ? "🔄"
+                        : "❌"}
+                    </span>
+                    并发分析结果
+                  </h2>
+                  <div
+                    className={`px-4 py-2 ${colorClass.badge} rounded-full font-bold text-lg border-2`}
+                  >
+                    {consistency.message}
+                  </div>
+                </div>
+
+                <div className="bg-white bg-opacity-95 p-6 rounded-xl">
+                  <div className="mb-4">
+                    <h3 className="text-lg font-bold text-gray-800 mb-2">
+                      🎯 一致性分析
+                    </h3>
+                    <p className="text-gray-700 leading-relaxed">
+                      {consistency.type === "all_consistent" &&
+                        `${concurrentCount}次分析结果完全一致，可信度极高！`}
+                      {consistency.type === "two_consistent" &&
+                        (consistency.totalCount < concurrentCount
+                          ? `已有两次分析结果一致，等待其他${
+                              concurrentCount - consistency.totalCount
+                            }次确认...`
+                          : "有两次分析结果一致，可信度较高。")}
+                      {consistency.type === "all_different" &&
+                        `${concurrentCount}次分析结果都不相同，建议重新分析。`}
+                      {consistency.type === "all_failed" &&
+                        (consistency.totalCount < concurrentCount
+                          ? `已有${consistency.failedCount}次分析失败，其他任务进行中...`
+                          : `${concurrentCount}次分析都失败了，请检查网络或API设置。`)}
+                      {consistency.type === "only_one_success" &&
+                        (consistency.totalCount < concurrentCount
+                          ? "已有一次分析成功，其他任务进行中..."
+                          : "只有一次分析成功，建议重新尝试。")}
+                      {consistency.type === "two_different" &&
+                        (consistency.totalCount < concurrentCount
+                          ? `两次分析结果不一致，等待其他${
+                              concurrentCount - consistency.totalCount
+                            }次判断...`
+                          : "两次成功但结果不一致，可能存在不确定性。")}
+                      {consistency.type === "waiting" &&
+                        "正在启动题目解答，请稍候..."}
+                      {consistency.type === "uncertain" &&
+                        (consistency.totalCount < concurrentCount
+                          ? "分析进行中，请等待更多结果..."
+                          : "无法确定一致性，建议重新分析。")}
+                    </p>
+                  </div>
+
+                  {/* 如果有匹配的结果，显示最佳答案 */}
+                  {consistency.matches && consistency.matches.length > 0 && (
+                    <div className="mb-4 p-4 bg-green-50 border-2 border-green-200 rounded-lg">
+                      <h4 className="font-bold text-green-800 mb-2">
+                        🏆 最可能的答案
+                      </h4>
+                      <div className="text-xl font-bold text-green-900">
+                        {consistency.matches[0].answer}
+                      </div>
+                      <p className="text-sm text-green-700 mt-1">
+                        匹配度:{" "}
+                        {(consistency.matches[0].similarity * 100).toFixed(1)}%
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* 详细结果展示 */}
+            <div className="space-y-4">
+              <h3 className="text-xl font-bold text-gray-800 mb-4">
+                📊 详细分析结果 ({results.length}/{concurrentCount})
+              </h3>
+              {results.length === 0 ? (
+                <div className="text-center py-8 bg-gray-50 rounded-lg border-2 border-dashed border-gray-300">
+                  <div className="animate-pulse text-gray-500">
+                    <div className="text-4xl mb-2">🚀</div>
+                    <div className="text-lg font-medium">题目解答启动中...</div>
+                    <div className="text-sm">
+                      {concurrentCount}次验证同时进行，结果会立即显示
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div
+                  className={`grid gap-4 ${
+                    results.length === 1
+                      ? "grid-cols-1 max-w-md mx-auto"
+                      : results.length === 2
+                      ? "grid-cols-1 lg:grid-cols-2"
+                      : "grid-cols-1 lg:grid-cols-3"
+                  }`}
+                >
+                  {results.map((result) => (
+                    <div
+                      key={result.id}
+                      className="border rounded-lg p-4 bg-white shadow-sm"
+                    >
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center">
+                          <span className="w-8 h-8 bg-blue-500 text-white rounded-full flex items-center justify-center text-sm font-bold mr-2">
+                            {result.id}
+                          </span>
+                          <span className="font-medium">分析 #{result.id}</span>
+                        </div>
+                        {result.timeSpent && (
+                          <span className="text-sm text-gray-500 bg-gray-100 px-2 py-1 rounded">
+                            ⏱️ {result.timeSpent}s
+                          </span>
+                        )}
+                      </div>
+
+                      {result.error ? (
+                        <div className="bg-red-50 border border-red-200 rounded p-3">
+                          <div className="text-red-800 font-medium flex items-center mb-1">
+                            <span className="mr-1">❌</span>
+                            分析失败
+                          </div>
+                          <div className="text-red-600 text-sm">
+                            {result.error}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="bg-gray-50 border border-gray-200 rounded p-3">
+                          <div className="text-gray-800 font-medium flex items-center mb-2">
+                            <span className="mr-1">✅</span>
+                            分析结果
+                          </div>
+                          <div className="text-gray-700 text-sm leading-relaxed">
+                            {/* 完整显示每个结果的内容 */}
+                            {result.result?.question && (
+                              <div className="mb-2">
+                                <div className="font-medium text-blue-800 text-xs mb-1">
+                                  问题:
+                                </div>
+                                <div className="text-gray-700 text-xs">
+                                  {result.result.question}
+                                </div>
+                              </div>
+                            )}
+                            <div className="font-medium text-green-800 text-xs mb-1">
+                              答案:
+                            </div>
+                            <div className="text-gray-900 font-semibold">
+                              {result.result?.answer ||
+                                (typeof result.result === "string"
+                                  ? result.result
+                                  : "无具体结果")}
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+
+                  {/* 显示未完成任务的占位符 */}
+                  {results.length < concurrentCount &&
+                    Array.from(
+                      { length: concurrentCount - results.length },
+                      (_, index) => {
+                        const placeholderId = results.length + index + 1;
+                        return (
+                          <div
+                            key={`placeholder-${placeholderId}`}
+                            className="border-2 border-dashed border-gray-300 rounded-lg p-4 bg-gray-50"
+                          >
+                            <div className="flex items-center justify-between mb-3">
+                              <div className="flex items-center">
+                                <span className="w-8 h-8 bg-gray-300 text-gray-600 rounded-full flex items-center justify-center text-sm font-bold mr-2">
+                                  {placeholderId}
+                                </span>
+                                <span className="font-medium text-gray-500">
+                                  分析 #{placeholderId}
+                                </span>
+                              </div>
+                              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-400"></div>
+                            </div>
+
+                            <div className="bg-gray-100 border border-gray-200 rounded p-3">
+                              <div className="text-gray-500 font-medium flex items-center mb-2">
+                                <span className="mr-1">⏳</span>
+                                分析中...
+                              </div>
+                              <div className="text-gray-400 text-sm">
+                                正在等待AI响应，结果会立即显示在这里
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }
+                    )}
+                </div>
+              )}
+            </div>
+
+            {/* 实时进度显示（如果还在进行中） */}
+            {analysisProgress &&
+              analysisProgress.some((p) => p.status === "analyzing") && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                  <h4 className="font-bold text-blue-800 mb-3">🔄 分析进度</h4>
+                  <div className="space-y-2">
+                    {analysisProgress.map((progress) => (
+                      <div key={progress.id} className="flex items-center">
+                        <span className="w-6 h-6 bg-blue-500 text-white rounded-full flex items-center justify-center text-xs font-bold mr-3">
+                          {progress.id}
+                        </span>
+                        <div className="flex-1">
+                          <div className="flex justify-between mb-1">
+                            <span className="text-sm font-medium text-blue-900">
+                              分析 #{progress.id} -{" "}
+                              {progress.status === "analyzing"
+                                ? "分析中..."
+                                : "等待中"}
+                            </span>
+                            <span className="text-sm text-blue-700">
+                              {progress.progress}%
+                            </span>
+                          </div>
+                          <div className="w-full bg-blue-200 rounded-full h-2">
+                            <div
+                              className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                              style={{ width: `${progress.progress}%` }}
+                            ></div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+          </div>
+        );
+      }
+    }
+
+    // 处理错误记录
+    if (
+      typeof responseData === "object" &&
+      responseData.type &&
+      responseData.type.includes("error")
+    ) {
+      const { type, error, message, timestamp, model } = responseData;
+
+      if (isCompact) {
+        // 紧凑模式：用于历史记录
+        return (
+          <div className="bg-gradient-to-r from-red-100 to-orange-100 px-3 py-2 rounded-lg border-2 border-red-300">
+            <div className="text-xs font-bold text-red-900 mb-1 flex items-center">
+              <span className="mr-1">❌</span>
+              {error}
+            </div>
+            <div className="text-xs text-red-700">{message}</div>
+            <div className="text-xs text-red-600 mt-1 flex justify-between">
+              <span>模型: {model}</span>
+              <span>{new Date(timestamp).toLocaleTimeString()}</span>
+            </div>
+          </div>
+        );
+      } else {
+        // 完整模式：用于主界面
+        return (
+          <div className="relative p-6 rounded-2xl border-3 shadow-2xl bg-gradient-to-br from-red-400 via-orange-500 to-red-600 border-red-300">
+            <div className="absolute inset-0 bg-white bg-opacity-20 rounded-2xl"></div>
+            <div className="relative z-10">
+              <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between mb-4">
+                <h2 className="text-2xl lg:text-3xl font-bold text-white flex items-center mb-2 lg:mb-0">
+                  <span className="mr-3 text-3xl">❌</span>
+                  {error}
+                </h2>
+                <div className="px-4 py-2 bg-white bg-opacity-90 text-gray-800 rounded-full font-bold">
+                  模型: {model}
+                </div>
+              </div>
+              <div className="bg-white bg-opacity-95 p-6 rounded-xl">
+                <p className="text-gray-800 leading-relaxed text-lg">
+                  {message}
+                </p>
+                <p className="text-sm text-gray-600 mt-2">
+                  时间: {new Date(timestamp).toLocaleString()}
+                </p>
+              </div>
+            </div>
+          </div>
+        );
+      }
+    }
+
+    // 如果是JSON对象格式的响应，直接处理
+    if (
+      typeof responseData === "object" &&
+      responseData.question &&
+      responseData.answer
+    ) {
+      const { question, answer } = responseData;
+
+      // 检测是否为填空题
+      const isFillInBlank =
+        question.includes("填") ||
+        question.includes("空") ||
+        question.includes("____") ||
+        question.includes("___") ||
+        question.includes("__") ||
+        question.includes("(  )") ||
+        question.includes("（  ）") ||
+        /填.*?空|空.*?填|什么|哪.*?个|是.*?\?/.test(question);
+
+      if (isCompact) {
+        // 紧凑模式：用于历史记录
+        return (
+          <div
+            className={`px-3 py-2 rounded-lg border ${
+              isFillInBlank
+                ? "bg-gradient-to-r from-orange-100 to-red-100 border-orange-200"
+                : "bg-gradient-to-r from-emerald-100 to-green-100 border-emerald-200"
+            }`}
+          >
+            <div
+              className={`font-medium text-xs mb-1 ${
+                isFillInBlank ? "text-orange-800" : "text-emerald-800"
+              }`}
+            >
+              {isFillInBlank ? "📝 填空题: " : "Q: "}
+              {question}
+            </div>
+            <div
+              className={`text-white px-2 py-1 rounded font-bold text-sm ${
+                isFillInBlank
+                  ? "bg-gradient-to-r from-orange-500 to-red-500"
+                  : "bg-gradient-to-r from-emerald-500 to-green-500"
+              }`}
+            >
+              {answer}
+            </div>
+          </div>
+        );
+      } else {
+        // 完整模式：用于主界面
+        return (
+          <div className="space-y-4">
+            <div
+              className={`p-4 border-l-4 rounded-r-lg shadow-sm ${
+                isFillInBlank
+                  ? "bg-gradient-to-r from-orange-50 to-red-50 border-orange-500"
+                  : "bg-gradient-to-r from-blue-50 to-indigo-50 border-blue-500"
+              }`}
+            >
+              <p
+                className={`text-sm font-semibold mb-2 flex items-center ${
+                  isFillInBlank ? "text-orange-800" : "text-blue-800"
+                }`}
+              >
+                {isFillInBlank ? (
+                  <>
+                    <span className="mr-2">📝</span>
+                    填空题
+                  </>
+                ) : (
+                  <>
+                    <svg
+                      className="w-4 h-4 mr-2"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M8.228 9c.549-1.165 2.03-2 3.772-2 2.21 0 4 1.343 4 3 0 1.4-1.278 2.575-3.006 2.907-.542.104-.994.54-.994 1.093m0 3h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
+                      />
+                    </svg>
+                    问题
+                  </>
+                )}
+              </p>
+              <p className="text-gray-700 leading-relaxed text-base">
+                {question}
+              </p>
+            </div>
+
+            {/* 醒目的答案显示区域 - 填空题使用特殊样式 */}
+            <div
+              className={`relative p-6 rounded-xl shadow-xl border-2 ${
+                isFillInBlank
+                  ? "bg-gradient-to-br from-orange-500 via-red-500 to-pink-600 border-orange-300"
+                  : "bg-gradient-to-br from-emerald-500 via-green-500 to-teal-600 border-emerald-300"
+              }`}
+            >
+              {/* 装饰性背景图案 */}
+              <div className="absolute inset-0 bg-white bg-opacity-10 rounded-xl"></div>
+              <div className="absolute top-2 right-2 opacity-20">
+                {isFillInBlank ? (
+                  <span className="text-4xl text-white">📝</span>
+                ) : (
+                  <svg
+                    className="w-8 h-8 text-white"
+                    fill="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                  </svg>
+                )}
+              </div>
+
+              <div className="relative z-10">
+                <p className="text-sm font-bold text-white mb-3 flex items-center">
+                  {isFillInBlank ? (
+                    <>
+                      <span className="mr-2">📝</span>
+                      填空答案
+                    </>
+                  ) : (
+                    <>
+                      <svg
+                        className="w-5 h-5 mr-2"
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                        />
+                      </svg>
+                      答案
+                    </>
+                  )}
+                </p>
+                <div className="bg-white bg-opacity-95 p-4 rounded-lg shadow-inner">
+                  <p
+                    className={`text-gray-800 leading-relaxed font-bold text-center ${
+                      isFillInBlank
+                        ? "text-2xl sm:text-3xl lg:text-4xl border-2 border-dashed border-orange-300 py-4 bg-orange-50"
+                        : "text-xl sm:text-2xl lg:text-3xl"
+                    }`}
+                  >
+                    {answer}
+                  </p>
+                  {isFillInBlank && (
+                    <p className="text-xs text-orange-600 text-center mt-2">
+                      🎯 填空题答案
+                    </p>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+    }
+
+    // 如果是字符串格式，尝试解析
+    const text =
+      typeof responseData === "string" ? responseData : String(responseData);
 
     // 尝试匹配不同的问答格式
     const patterns = [
@@ -965,7 +2201,7 @@ const App = () => {
     return canvas.toDataURL("image/jpeg", 0.7).split(",")[1];
   };
 
-  // 拍照并直接发送给 AI
+  // 拍照并进行三次并发分析
   const handleCaptureAndAnalyze = async () => {
     if (!videoRef.current || cameraStatus !== "success") {
       setErrorMessage("摄像头未就绪，请稍后重试。");
@@ -987,6 +2223,7 @@ const App = () => {
     setTotalApiTime(null);
     setErrorMessage(null);
     setProcessedImage(null);
+    setCurrentRecordId(null); // 重置记录ID
 
     const video = videoRef.current;
 
@@ -1003,23 +2240,138 @@ const App = () => {
 
     try {
       const currentModel = models.find((m) => m.id === selectedModel);
-      setStatus(`正在向 ${currentModel?.name || "所选模型"} 提交照片...`);
+      setStatus(
+        `🚀 正在解答题目 (${concurrentCount}次验证, ${
+          currentModel?.name || "所选模型"
+        })...`
+      );
 
-      const responseText = await callAIAPI(imageData);
-      setAnswer(responseText);
+      // 启动倒计时 - 根据并发数动态调整超时时间
+      const timeoutSeconds = Math.max(8, concurrentCount * 3); // 最少8秒，每个并发任务加3秒
+      setCountdown(timeoutSeconds);
+      const countdownInterval = setInterval(() => {
+        setCountdown((prev) => {
+          if (prev <= 1) {
+            clearInterval(countdownInterval);
+            return null;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+
+      // 立即设置初始答案状态，然后让performConcurrentAnalysis实时更新
+      setAnswer({
+        type: "concurrent_analysis",
+        results: [],
+        consistency: {
+          type: "waiting",
+          color: "gray",
+          message: "等待分析结果...",
+          matches: [],
+          totalCount: 0,
+          successCount: 0,
+          failedCount: 0,
+        },
+        analysisProgress: analysisProgress,
+      });
+
+      const concurrentData = await performConcurrentAnalysis(imageData);
+
+      // 清理倒计时
+      clearInterval(countdownInterval);
+      setCountdown(null);
 
       const apiEnd = performance.now();
       setTotalApiTime(((apiEnd - startTimeRef.current) / 1000).toFixed(2));
-      setStatus("完成！");
+
+      setStatus(
+        `🎯 并发分析完成！一致性：${concurrentData.consistency.message}`
+      );
 
       // === 将记录保存到 IndexedDB ===
-      await saveToHistory(imageData, responseText);
+      const recordId = await saveToHistory(imageData, {
+        type: "concurrent_analysis",
+        results: concurrentData.results,
+        consistency: concurrentData.consistency,
+      });
+      if (recordId) {
+        setCurrentRecordId(recordId);
+      }
     } catch (error) {
-      console.error("API call failed:", error);
-      setErrorMessage("哎呀，出了点问题，请重试。");
-      setStatus("出错了。");
+      console.error("Concurrent analysis failed:", error);
+
+      // 清理倒计时（确保在任何错误情况下都清理）
+      setCountdown(null);
+
+      // 根据错误类型显示不同的错误信息
+      let errorResponse = null;
+      if (error.message.includes("超时")) {
+        setErrorMessage(
+          "⏰ " + error.message + "\n系统已自动重置，可以立即进行下一次拍照。"
+        );
+        setStatus("并发分析超时，请重试");
+
+        // 超时时重置处理时间显示
+        const timeoutEnd = performance.now();
+        setTotalApiTime(
+          ((timeoutEnd - startTimeRef.current) / 1000).toFixed(2) + " (超时)"
+        );
+
+        // 为超时情况创建错误记录对象
+        errorResponse = {
+          type: "concurrent_timeout_error",
+          error: "并发分析超时",
+          message: error.message,
+          timestamp: new Date().toISOString(),
+          model: selectedModel,
+        };
+      } else if (error.message.includes("API Key")) {
+        setErrorMessage("🔑 API Key 错误：" + error.message);
+        setStatus("API Key 问题");
+
+        errorResponse = {
+          type: "api_key_error",
+          error: "API Key 错误",
+          message: error.message,
+          timestamp: new Date().toISOString(),
+          model: selectedModel,
+        };
+      } else if (error.message.includes("网络")) {
+        setErrorMessage("🌐 网络连接问题：" + error.message);
+        setStatus("网络错误");
+
+        errorResponse = {
+          type: "network_error",
+          error: "网络错误",
+          message: error.message,
+          timestamp: new Date().toISOString(),
+          model: selectedModel,
+        };
+      } else {
+        setErrorMessage("❌ " + (error.message || "未知错误，请重试"));
+        setStatus("并发分析出错了");
+
+        errorResponse = {
+          type: "concurrent_unknown_error",
+          error: "并发分析未知错误",
+          message: error.message || "未知错误",
+          timestamp: new Date().toISOString(),
+          model: selectedModel,
+        };
+      }
+
+      // 保存错误记录到历史（如果有可用的图片数据）
+      if (errorResponse && imageData) {
+        try {
+          await saveToHistory(imageData, errorResponse);
+        } catch (saveError) {
+          console.error("保存错误记录失败:", saveError);
+        }
+      }
     } finally {
+      // 确保loading状态和倒计时总是被重置，防止界面卡死
       setIsLoading(false);
+      setCountdown(null);
     }
   };
 
@@ -1028,7 +2380,7 @@ const App = () => {
       <div className="w-full mx-auto bg-white rounded-xl shadow-lg p-4 sm:p-6 mb-4 sm:mb-6 overflow-x-hidden max-w-full sm:max-w-full md:max-w-3xl lg:max-w-4xl xl:max-w-5xl">
         <div className="flex items-center justify-between mb-4 sm:mb-6">
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-800 flex-shrink truncate">
-            Vision Lens
+            📚 题目解答助手
           </h1>
           <div className="flex items-center space-x-1 sm:space-x-2 flex-shrink-0">
             {/* 历史记录按钮 */}
@@ -1220,13 +2572,35 @@ const App = () => {
           }`}
         >
           {isLoading
-            ? "正在分析..."
+            ? `正在解答题目 (${concurrentCount}次验证)...`
             : cameraStatus !== "success"
             ? "等待摄像头就绪..."
-            : "拍照并获取答案"}
+            : `📸 拍照解题 (${concurrentCount}次验证)`}
         </button>
         <div className="text-center mt-2">
-          <p className="text-sm text-gray-500">{status}</p>
+          <p className="text-sm text-gray-500">
+            {status}
+            {countdown !== null && (
+              <span className="ml-2 inline-flex items-center">
+                <span className="animate-pulse text-orange-600 font-bold">
+                  ⏰ {countdown}秒
+                </span>
+                <span className="ml-1 text-xs text-gray-400">
+                  (超时自动取消)
+                </span>
+              </span>
+            )}
+          </p>
+          {countdown !== null && (
+            <div className="mt-2 w-full bg-gray-200 rounded-full h-2">
+              <div
+                className="bg-gradient-to-r from-blue-500 to-orange-500 h-2 rounded-full transition-all duration-1000 ease-linear"
+                style={{
+                  width: `${((8 - countdown) / 8) * 100}%`,
+                }}
+              ></div>
+            </div>
+          )}
           {cameraStatus === "success" && !isLoading && (
             <p className="text-xs text-gray-400 mt-1">
               💡 提示：点击按钮或按下
@@ -1246,47 +2620,9 @@ const App = () => {
           </div>
         )}
 
-        {/* 环境信息显示（调试用） */}
-        <div className="mt-4 p-3 bg-gray-50 border border-gray-200 rounded-lg">
-          <details className="text-xs text-gray-600">
-            <summary className="cursor-pointer font-medium">
-              🔧 环境信息 (调试面板)
-            </summary>
-            <div className="mt-2 space-y-1">
-              <p>
-                🌐 环境: {getEnvironmentInfo().isWeChat ? "微信" : "浏览器"}
-              </p>
-              <p>
-                📱 设备: {getEnvironmentInfo().isMobile ? "移动端" : "桌面端"}
-              </p>
-              <p>
-                🔒 协议: {getEnvironmentInfo().isHTTPS ? "HTTPS" : "HTTP"}{" "}
-                {getEnvironmentInfo().isLocalhost && "(本地)"}
-              </p>
-              <p>
-                📷 摄像头API:{" "}
-                {getEnvironmentInfo().supportsCameraAPI
-                  ? "✅ 支持"
-                  : "❌ 不支持"}
-              </p>
-              <p>
-                🎥 可用性:{" "}
-                {getEnvironmentInfo().canUseCamera ? "✅ 可用" : "❌ 不可用"}
-              </p>
-              <p>📊 摄像头状态: {cameraStatus}</p>
-              <p>
-                🔄 重试次数: {retryCount}/{MAX_RETRY_COUNT}
-              </p>
-              <p>📺 视频流: {videoStream ? "已获取" : "未获取"}</p>
-              <p>🔧 vConsole: 已启用 (检查右下角绿色按钮)</p>
-              <p>🏷️ 用户代理: {navigator.userAgent}</p>
-            </div>
-          </details>
-        </div>
-
         <div className="mt-6 sm:mt-8 p-4 sm:p-6 bg-gray-50 rounded-lg shadow-inner">
           <h2 className="text-lg sm:text-xl font-bold text-gray-700 mb-3">
-            AI 答案
+            📝 题目解答
           </h2>
           {isLoading && (
             <div className="text-center py-4">
@@ -1320,7 +2656,7 @@ const App = () => {
                 {answer ? (
                   parseAndHighlightAnswer(answer)
                 ) : (
-                  <p className="text-gray-500 italic">等待您的照片...</p>
+                  <p className="text-gray-500 italic">等待拍摄题目...</p>
                 )}
               </div>
             </>
@@ -1525,6 +2861,34 @@ const App = () => {
                 </div>
               </div>
 
+              {/* 并发分析配置 */}
+              <div className="mb-6">
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  并发分析次数
+                </label>
+                <select
+                  value={concurrentCount}
+                  onChange={(e) => {
+                    const count = parseInt(e.target.value, 10);
+                    setConcurrentCount(count);
+                    localStorage.setItem(
+                      "visionLens_concurrentCount",
+                      count.toString()
+                    );
+                  }}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                >
+                  <option value={1}>1次 (单次分析，速度最快)</option>
+                  <option value={2}>2次 (双重验证)</option>
+                  <option value={3}>3次 (三重验证，推荐)</option>
+                  <option value={4}>4次 (高可靠性)</option>
+                  <option value={5}>5次 (极高可靠性，速度较慢)</option>
+                </select>
+                <p className="text-xs text-gray-500 mt-2">
+                  💡 更多并发次数可以提高答案准确性，但会增加耗时和API调用费用
+                </p>
+              </div>
+
               {/* API Key 配置区域 */}
               <div>
                 {selectedModel === "gemini" && (
@@ -1543,19 +2907,36 @@ const App = () => {
                   </p>
                 )}
 
-                {selectedModel === "glm" && (
-                  <p className="text-sm text-gray-600 mb-3">
-                    请输入你的智谱AI API Key。如果你还没有 API Key，请访问{" "}
-                    <a
-                      href="https://bigmodel.cn/"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-600 hover:text-blue-800 underline"
-                    >
-                      智谱AI开放平台
-                    </a>{" "}
-                    获取。
-                  </p>
+                {(selectedModel === "glm_4v" ||
+                  selectedModel === "glm_flashx") && (
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-3">
+                    <h4 className="font-medium text-blue-900 mb-2">
+                      智谱AI模型说明：
+                    </h4>
+                    <ul className="text-sm text-blue-800 space-y-1">
+                      <li>
+                        • <strong>GLM-4V-Plus (快速版)</strong>
+                        ：响应速度快，适合日常练习和简单题目
+                      </li>
+                      <li>
+                        • <strong>GLM-4.1V-FlashX (推理版)</strong>
+                        ：深度推理，准确度更高，适合复杂题目和难题
+                      </li>
+                      <li>• 两个模型共享同一个API Key</li>
+                    </ul>
+                    <p className="text-sm text-blue-700 mt-2">
+                      如果你还没有 API Key，请访问{" "}
+                      <a
+                        href="https://bigmodel.cn/"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:text-blue-800 underline"
+                      >
+                        智谱AI开放平台
+                      </a>{" "}
+                      获取。
+                    </p>
+                  </div>
                 )}
 
                 <label className="block text-sm font-medium text-gray-700 mb-2">
