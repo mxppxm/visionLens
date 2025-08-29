@@ -11,6 +11,7 @@ import React from "react";
  * @param {number} props.maxRetryCount - 最大重试次数
  * @param {Function} props.onRetry - 重试回调
  * @param {Function} props.getEnvironmentInfo - 获取环境信息
+ * @param {Function} props.onHealthCheck - 健康检查回调
  */
 const CameraDisplay = ({
   videoRef,
@@ -20,6 +21,7 @@ const CameraDisplay = ({
   maxRetryCount,
   onRetry,
   getEnvironmentInfo,
+  onHealthCheck,
 }) => {
   const environmentInfo = getEnvironmentInfo();
 
@@ -80,13 +82,24 @@ const CameraDisplay = ({
 
               {/* 重试按钮 */}
               {cameraError.showRetry && (
-                <button
-                  onClick={onRetry}
-                  disabled={cameraStatus === "retrying"}
-                  className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors duration-200 font-medium"
-                >
-                  {cameraStatus === "retrying" ? "重试中..." : "🔄 重试"}
-                </button>
+                <div className="flex gap-2 justify-center">
+                  <button
+                    onClick={onRetry}
+                    disabled={cameraStatus === "retrying"}
+                    className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors duration-200 font-medium"
+                  >
+                    {cameraStatus === "retrying" ? "重试中..." : "🔄 重试"}
+                  </button>
+                  {onHealthCheck && (
+                    <button
+                      onClick={onHealthCheck}
+                      className="px-4 py-3 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors duration-200 font-medium text-sm"
+                      title="检查摄像头状态"
+                    >
+                      🔍 检查
+                    </button>
+                  )}
+                </div>
               )}
 
               {retryCount >= maxRetryCount && (

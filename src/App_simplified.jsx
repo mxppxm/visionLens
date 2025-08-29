@@ -396,7 +396,16 @@ const App = () => {
           )}
 
           {errorMessage && (
-            <p className="text-red-500 text-sm mt-2">{errorMessage}</p>
+            <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-lg">
+              <h4 className="text-sm font-medium text-red-800 mb-1">
+                {typeof errorMessage === "object" ? errorMessage.title : "错误"}
+              </h4>
+              <p className="text-red-600 text-sm">
+                {typeof errorMessage === "object"
+                  ? errorMessage.message
+                  : errorMessage}
+              </p>
+            </div>
           )}
 
           {!isLoading && !errorMessage && (

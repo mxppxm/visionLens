@@ -14,6 +14,8 @@ import { analyzeConsistency } from './consistencyAnalysis.js';
  * @param {number} concurrentCount - 并发次数
  * @param {Function} onProgress - 进度回调
  * @param {Function} onResult - 结果回调
+ * @param {string} taskId - 任务ID
+ * @param {Function} onDatabaseSave - 数据库保存回调
  * @returns {Promise<Object>} 并发分析结果
  */
 export const performConcurrentAnalysis = async (
@@ -22,7 +24,9 @@ export const performConcurrentAnalysis = async (
     apiKey,
     concurrentCount,
     onProgress,
-    onResult
+    onResult,
+    taskId = null,
+    onDatabaseSave = null
 ) => {
     // 初始化进度状态
     const initialProgress = Array.from(
@@ -92,7 +96,16 @@ export const performConcurrentAnalysis = async (
                     type: "concurrent_analysis",
                     results: [...completedResults],
                     consistency: currentConsistency,
+                    taskId: taskId, // 包含任务ID用于验证
                 });
+
+                // 如果有足够的成功结果，立即保存（防止用户快速点击导致结果丢失）
+                if (currentConsistency.successCount > 0 && onDatabaseSave) {
+                    const partialResult = { results: [...completedResults], consistency: currentConsistency };
+                    onDatabaseSave(partialResult, imageData).catch(error => {
+                        console.error("实时保存失败:", error);
+                    });
+                }
 
                 return taskResult;
             } catch (error) {
@@ -133,7 +146,16 @@ export const performConcurrentAnalysis = async (
                     type: "concurrent_analysis",
                     results: [...completedResults],
                     consistency: currentConsistency,
+                    taskId: taskId, // 包含任务ID用于验证
                 });
+
+                // 如果有任何结果（包括失败），都尝试保存
+                if (completedResults.length > 0 && onDatabaseSave) {
+                    const partialResult = { results: [...completedResults], consistency: currentConsistency };
+                    onDatabaseSave(partialResult, imageData).catch(error => {
+                        console.error("实时保存失败:", error);
+                    });
+                }
 
                 return taskResult;
             }
@@ -141,17 +163,42 @@ export const performConcurrentAnalysis = async (
     );
 
     try {
-        const allResults = await Promise.all(analysisPromises);
+        const allResults = await Promise.allSettled(analysisPromises);
+
+        // 提取实际结果（Promise.allSettled返回的是{status, value/reason}格式）
+        const actualResults = allResults.map(result =>
+            result.status === 'fulfilled' ? result.value : {
+                id: result.reason?.id || 0,
+                result: null,
+                timeSpent: '0.00',
+                error: result.reason?.message || '未知错误'
+            }
+        );
 
         // 最终更新状态
-        const finalConsistency = analyzeConsistency(allResults, concurrentCount);
+        const finalConsistency = analyzeConsistency(actualResults, concurrentCount);
+        const finalResult = { results: actualResults, consistency: finalConsistency };
 
-        return { results: allResults, consistency: finalConsistency };
+        // 自动保存到数据库，无论UI是否还在显示
+        if (onDatabaseSave) {
+            await onDatabaseSave(finalResult, imageData);
+        }
+
+        return finalResult;
     } catch (error) {
+        console.error('并发分析出现未捕获错误:', error);
         // 如果有未捕获的错误，也要保证返回当前结果
         const finalConsistency = analyzeConsistency(completedResults, concurrentCount);
+        const finalResult = { results: completedResults, consistency: finalConsistency };
 
-        return { results: completedResults, consistency: finalConsistency };
+        // 即使有错误也要保存已完成的结果
+        if (onDatabaseSave) {
+            await onDatabaseSave(finalResult, imageData).catch(saveError => {
+                console.error('保存失败结果时出错:', saveError);
+            });
+        }
+
+        return finalResult;
     }
 };
 

@@ -172,10 +172,10 @@ export const getSavedModel = (models) => {
  * @param {string} apiKey - API密钥
  */
 export const saveApiKey = (modelId, apiKey) => {
-    // 智谱相关模型共享API Key
+    // 豆包相关模型共享API Key
     let keyModelId = modelId;
-    if (modelId === "glm_flashx" || modelId === "glm_4v") {
-        keyModelId = "glm";
+    if (modelId === "doubao_vision" || modelId === "doubao_lite" || modelId === "doubao_flash") {
+        keyModelId = "doubao";
     }
 
     localStorage.setItem(`visionLens_apiKey_${keyModelId}`, apiKey);
@@ -187,10 +187,10 @@ export const saveApiKey = (modelId, apiKey) => {
  * @returns {string} API密钥
  */
 export const getSavedApiKey = (modelId) => {
-    // 智谱相关模型共享API Key
+    // 豆包相关模型共享API Key
     let keyModelId = modelId;
-    if (modelId === "glm_flashx" || modelId === "glm_4v") {
-        keyModelId = "glm";
+    if (modelId === "doubao_vision" || modelId === "doubao_lite" || modelId === "doubao_flash") {
+        keyModelId = "doubao";
     }
 
     return localStorage.getItem(`visionLens_apiKey_${keyModelId}`) || "";

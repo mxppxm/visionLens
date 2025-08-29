@@ -97,20 +97,23 @@ export const useCameraManager = ({ onStreamReady, onError, onStatusChange }) => 
             if (videoRef.current) {
                 videoRef.current.srcObject = stream;
 
+                // 等待视频元素准备就绪
                 return new Promise((resolve, reject) => {
                     const video = videoRef.current;
                     if (!video) {
-                        reject(new Error("视频元素已被卸载"));
+                        console.warn("⚠️ 视频元素已被卸载，但摄像头流已获取");
+                        resolve(stream); // 即使视频元素不存在，摄像头流也是有效的
                         return;
                     }
 
                     let isResolved = false;
                     const timeout = setTimeout(() => {
                         if (!isResolved) {
+                            console.warn("⚠️ 视频元素加载超时，但摄像头流已获取，继续使用");
                             cleanup();
-                            reject(new Error("摄像头初始化超时，请检查摄像头权限并重试"));
+                            resolve(stream); // 超时时仍然resolve，因为摄像头流是有效的
                         }
-                    }, 5000); // 减少超时时间到5秒
+                    }, 8000); // 增加超时时间到8秒
 
                     const cleanup = () => {
                         if (video) {
@@ -124,6 +127,16 @@ export const useCameraManager = ({ onStreamReady, onError, onStatusChange }) => 
                     const handleLoadedMetadata = () => {
                         if (!isResolved) {
                             isResolved = true;
+                            console.log("✅ 视频元数据加载成功");
+                            cleanup();
+                            resolve(stream);
+                        }
+                    };
+
+                    const handleCanPlay = () => {
+                        if (!isResolved) {
+                            isResolved = true;
+                            console.log("✅ 视频可以播放");
                             cleanup();
                             resolve(stream);
                         }
@@ -134,20 +147,32 @@ export const useCameraManager = ({ onStreamReady, onError, onStatusChange }) => 
                             isResolved = true;
                             console.error("❌ 视频元素错误:", err);
                             cleanup();
-                            reject(new Error("视频显示失败"));
+                            // 即使视频显示有问题，摄像头流仍然有效
+                            resolve(stream);
                         }
                     };
 
+                    // 绑定事件监听器
                     video.onloadedmetadata = handleLoadedMetadata;
+                    video.oncanplay = handleCanPlay;
                     video.onerror = handleError;
 
+                    // 检查视频是否已经准备就绪
                     if (video.readyState >= 1) {
+                        console.log("✅ 视频已准备就绪 (readyState >= 1)");
                         handleLoadedMetadata();
+                    } else if (video.readyState >= 4) {
+                        console.log("✅ 视频已可播放 (readyState >= 4)");
+                        handleCanPlay();
                     }
-                });
-            }
 
-            return stream;
+                    // 强制触发视频加载
+                    video.load();
+                });
+            } else {
+                console.log("✅ 摄像头流获取成功，视频元素稍后绑定");
+                return stream;
+            }
         } catch (error) {
             console.error(`❌ 配置 ${strategyIndex + 1} 失败:`, error);
 
@@ -225,9 +250,13 @@ export const useCameraManager = ({ onStreamReady, onError, onStatusChange }) => 
 
     // 初始化摄像头主函数
     const initializeCamera = async (isRetry = false) => {
-        if (isInitializingRef.current) return;
+        if (isInitializingRef.current) {
+            console.log("📷 摄像头正在初始化中，跳过重复请求");
+            return;
+        }
 
         isInitializingRef.current = true;
+        console.log(`📷 开始初始化摄像头 (isRetry: ${isRetry})`);
 
         try {
             checkEnvironmentCompatibility();
@@ -235,10 +264,11 @@ export const useCameraManager = ({ onStreamReady, onError, onStatusChange }) => 
             const newStatus = isRetry ? "retrying" : "initializing";
             setCameraStatus(newStatus);
             setCameraError(null);
-            onStatusChange?.(newStatus);
+            onStatusChange?.(isRetry ? `正在重试摄像头连接... (${currentRetryRef.current + 1}/${MAX_RETRY_COUNT})` : "正在初始化摄像头...");
 
             // 停止现有流
             if (videoStream) {
+                console.log("📷 停止现有摄像头流");
                 videoStream.getTracks().forEach((track) => track.stop());
                 setVideoStream(null);
             }
@@ -246,22 +276,40 @@ export const useCameraManager = ({ onStreamReady, onError, onStatusChange }) => 
             const stream = await setupCamera();
 
             if (!isInitializingRef.current) {
+                console.log("📷 初始化已取消，停止摄像头流");
                 if (stream) {
                     stream.getTracks().forEach((track) => track.stop());
                 }
                 return;
             }
 
+            console.log("✅ 摄像头初始化成功");
             setCameraStatus("success");
             setRetryCount(0);
             currentRetryRef.current = 0;
             setIsManualRetry(false);
             onStreamReady?.(stream);
-            onStatusChange?.("success");
+            onStatusChange?.("🎥 摄像头就绪，可以拍照了！");
         } catch (error) {
             console.error("❌ 摄像头初始化失败:", error);
 
-            if (!isInitializingRef.current) return;
+            if (!isInitializingRef.current) {
+                console.log("📷 初始化已取消，跳过错误处理");
+                return;
+            }
+
+            // 检查是否是权限错误且摄像头实际在工作
+            const hasWorkingStream = videoStream && videoStream.getTracks().some(track => track.readyState === 'live');
+            if (hasWorkingStream) {
+                console.log("✅ 检测到摄像头流正常工作，忽略初始化错误");
+                setCameraStatus("success");
+                setRetryCount(0);
+                currentRetryRef.current = 0;
+                setIsManualRetry(false);
+                onStreamReady?.(videoStream);
+                onStatusChange?.("🎥 摄像头就绪，可以拍照了！");
+                return;
+            }
 
             setCameraStatus("failed");
             const errorMessage = getCameraErrorMessage(error);
@@ -273,6 +321,7 @@ export const useCameraManager = ({ onStreamReady, onError, onStatusChange }) => 
                 const nextRetryCount = currentRetryRef.current + 1;
                 currentRetryRef.current = nextRetryCount;
 
+                console.log(`📷 准备自动重试 ${nextRetryCount}/${MAX_RETRY_COUNT}`);
                 setTimeout(() => {
                     if (isInitializingRef.current) {
                         setRetryCount(nextRetryCount);
@@ -281,26 +330,75 @@ export const useCameraManager = ({ onStreamReady, onError, onStatusChange }) => 
                     }
                 }, 2000);
             } else {
+                console.log("📷 达到最大重试次数或手动重试，停止自动重试");
                 currentRetryRef.current = 0;
             }
         } finally {
-            if (cameraStatus === "success" ||
+            const shouldFinalize =
+                cameraStatus === "success" ||
                 currentRetryRef.current >= MAX_RETRY_COUNT ||
-                isManualRetry) {
+                isManualRetry;
+
+            if (shouldFinalize) {
+                console.log("📷 摄像头初始化流程完成");
                 isInitializingRef.current = false;
             }
         }
     };
 
+    // 摄像头健康检查
+    const checkCameraHealth = () => {
+        if (videoRef.current && videoStream) {
+            const video = videoRef.current;
+            const tracks = videoStream.getTracks();
+
+            console.log("📷 摄像头健康检查:");
+            console.log("- 视频元素存在:", !!video);
+            console.log("- 视频流存在:", !!videoStream);
+            console.log("- 活跃轨道数量:", tracks.filter(t => t.readyState === 'live').length);
+            console.log("- 视频readyState:", video?.readyState);
+            console.log("- 视频播放状态:", !video?.paused);
+
+            const isHealthy =
+                video &&
+                videoStream &&
+                tracks.some(track => track.readyState === 'live') &&
+                video.readyState >= 1;
+
+            if (isHealthy && cameraStatus !== "success") {
+                console.log("✅ 摄像头实际正常，修正状态");
+                setCameraStatus("success");
+                setCameraError(null);
+                onStatusChange?.("🎥 摄像头就绪，可以拍照了！");
+                return true;
+            }
+
+            return isHealthy;
+        }
+        return false;
+    };
+
     // 手动重试摄像头
     const handleRetryCamera = () => {
+        console.log("🔄 用户手动重试摄像头");
+
+        // 先检查当前状态
+        if (checkCameraHealth()) {
+            console.log("✅ 摄像头实际正常，无需重试");
+            return;
+        }
+
+        // 停止现有流
         if (videoStream) {
+            console.log("📷 停止现有摄像头流进行重试");
             videoStream.getTracks().forEach((track) => track.stop());
             setVideoStream(null);
         }
 
         setIsManualRetry(true);
         setRetryCount(0);
+        currentRetryRef.current = 0;
+        isInitializingRef.current = false; // 确保可以重新初始化
         setCameraStatus("initializing");
         setCameraError(null);
 
@@ -309,11 +407,25 @@ export const useCameraManager = ({ onStreamReady, onError, onStatusChange }) => 
         }, 100);
     };
 
+    // 定期健康检查
+    useEffect(() => {
+        const healthCheckInterval = setInterval(() => {
+            // 只在显示错误时进行健康检查
+            if (cameraStatus === "failed" || cameraError) {
+                checkCameraHealth();
+            }
+        }, 3000); // 每3秒检查一次
+
+        return () => clearInterval(healthCheckInterval);
+    }, [cameraStatus, cameraError, videoStream]);
+
     // 组件挂载时初始化摄像头
     useEffect(() => {
+        console.log("📷 useCameraManager 组件挂载，开始初始化");
         initializeCamera();
 
         return () => {
+            console.log("📷 useCameraManager 组件卸载，清理资源");
             isInitializingRef.current = false;
             currentRetryRef.current = 0;
 
@@ -324,6 +436,7 @@ export const useCameraManager = ({ onStreamReady, onError, onStatusChange }) => 
             if (videoRef.current) {
                 videoRef.current.srcObject = null;
                 videoRef.current.onloadedmetadata = null;
+                videoRef.current.oncanplay = null;
                 videoRef.current.onerror = null;
             }
         };
@@ -337,6 +450,7 @@ export const useCameraManager = ({ onStreamReady, onError, onStatusChange }) => 
         videoStream,
         handleRetryCamera,
         getEnvironmentInfo,
+        checkCameraHealth, // 新增：供外部调用的健康检查
         MAX_RETRY_COUNT,
     };
 };

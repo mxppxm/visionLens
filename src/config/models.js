@@ -12,30 +12,41 @@ export const AI_MODELS = [
         apiKeyPlaceholder: "输入你的 Gemini API Key",
         provider: "google",
         features: ["text", "image", "fast_response"],
-        defaultTimeout: 8000,
-    },
-    {
-        id: "glm_4v",
-        name: "智谱 GLM-4V-Plus (快速版)",
-        description: "智谱AI题目解答模型，响应速度快，适合日常练习",
-        apiKeyLabel: "智谱AI API Key",
-        apiKeyPlaceholder: "输入你的智谱AI API Key",
-        provider: "zhipu",
-        features: ["text", "image", "fast_response"],
-        defaultTimeout: 8000,
-        sharedKeyWith: "glm_flashx", // 与其他模型共享API Key
-    },
-    {
-        id: "glm_flashx",
-        name: "智谱 GLM-4.1V-FlashX (推理版)",
-        description: "智谱AI深度推理模型，准确度高，适合难题解答",
-        apiKeyLabel: "智谱AI API Key",
-        apiKeyPlaceholder: "输入你的智谱AI API Key",
-        provider: "zhipu",
-        features: ["text", "image", "deep_reasoning"],
         defaultTimeout: 10000,
-        sharedKeyWith: "glm_4v", // 与其他模型共享API Key
     },
+    {
+        id: "doubao_vision",
+        name: "豆包模型 (高精度)",
+        description: "字节跳动豆包大模型 doubao-seed-1-6-250615，具备强大的图片理解与推理能力",
+        apiKeyLabel: "火山引擎 API Key",
+        apiKeyPlaceholder: "输入你的火山引擎 API Key",
+        provider: "bytedance",
+        features: ["text", "image", "visual_understanding", "high_accuracy"],
+        defaultTimeout: 10000,
+    },
+    {
+        id: "doubao_lite",
+        name: "豆包模型 (快速版)",
+        description: "字节跳动豆包大模型 doubao-seed-1-6-250615，优化参数配置，响应速度更快",
+        apiKeyLabel: "火山引擎 API Key",
+        apiKeyPlaceholder: "输入你的火山引擎 API Key",
+        provider: "bytedance",
+        features: ["text", "image", "fast_response"],
+        defaultTimeout: 10000,
+        sharedKeyWith: "doubao_vision",
+    },
+    {
+        id: "doubao_flash",
+        name: "豆包 Flash 模型",
+        description: "字节跳动豆包大模型 doubao-seed-1-6-flash-250715，超快响应速度，适合实时场景",
+        apiKeyLabel: "火山引擎 API Key",
+        apiKeyPlaceholder: "输入你的火山引擎 API Key",
+        provider: "bytedance",
+        features: ["text", "image", "ultra_fast", "real_time"],
+        defaultTimeout: 10000,
+        sharedKeyWith: "doubao_vision",
+    },
+
 ];
 
 /**
@@ -47,9 +58,9 @@ export const getModelStorageKey = (modelId) => {
     const model = AI_MODELS.find(m => m.id === modelId);
     if (!model) return modelId;
 
-    // 智谱相关模型共享API Key
-    if (model.provider === "zhipu") {
-        return "glm";
+    // 豆包相关模型共享API Key
+    if (model.provider === "bytedance") {
+        return "doubao";
     }
 
     return modelId;
@@ -69,7 +80,7 @@ export const getModelConfig = (modelId) => {
  * @returns {string} 默认模型ID
  */
 export const getDefaultModel = () => {
-    return "gemini";
+    return "doubao_vision"; // 使用豆包视觉理解模型作为默认模型
 };
 
 /**
@@ -88,5 +99,5 @@ export const isValidModel = (modelId) => {
  */
 export const getModelTimeout = (modelId) => {
     const model = getModelConfig(modelId);
-    return model?.defaultTimeout || 8000;
+    return model?.defaultTimeout || 30000;
 };

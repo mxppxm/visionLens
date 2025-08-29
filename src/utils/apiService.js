@@ -3,7 +3,7 @@
  * 提供统一的AI模型调用接口，集成v0 AI优化功能
  */
 
-import { callGeminiAPI, callGLM4VAPI, callGLMFlashXAPI } from './apiModels.js';
+import { callGeminiAPI, callDoubaoVisionAPI, callDoubaoLiteAPI, callDoubaoFlashAPI } from './apiModels.js';
 import { enhanceErrorHandling, optimizeAPIRequest } from './v0Integration.js';
 
 // 学术题目分析Prompt
@@ -64,7 +64,7 @@ export const AI_ANALYSIS_PROMPT = `你是一位学术题目解答专家，专门
  * @param {number} timeout - 超时时间(毫秒)
  * @returns {Promise} 超时Promise
  */
-export const createTimeoutPromise = (timeout = 8000) => {
+export const createTimeoutPromise = (timeout = 30000) => {
     return new Promise((_, reject) => {
         setTimeout(() => {
             reject(new Error("API调用超时，请求已取消"));
@@ -84,10 +84,12 @@ export const callAIAPI = async (selectedModel, imageData, apiKey) => {
         switch (selectedModel) {
             case "gemini":
                 return await callGeminiAPI(imageData, apiKey, AI_ANALYSIS_PROMPT);
-            case "glm_4v":
-                return await callGLM4VAPI(imageData, apiKey, AI_ANALYSIS_PROMPT);
-            case "glm_flashx":
-                return await callGLMFlashXAPI(imageData, apiKey, AI_ANALYSIS_PROMPT);
+            case "doubao_vision":
+                return await callDoubaoVisionAPI(imageData, apiKey, AI_ANALYSIS_PROMPT);
+            case "doubao_lite":
+                return await callDoubaoLiteAPI(imageData, apiKey, AI_ANALYSIS_PROMPT);
+            case "doubao_flash":
+                return await callDoubaoFlashAPI(imageData, apiKey, AI_ANALYSIS_PROMPT);
             default:
                 throw new Error(`未知的模型类型: ${selectedModel}`);
         }
@@ -104,7 +106,7 @@ export const callAIAPI = async (selectedModel, imageData, apiKey) => {
 
         const result = await Promise.race([
             apiCall(),
-            createTimeoutPromise(optimizedParams.timeout || 8000),
+            createTimeoutPromise(30000), // API调用允许30秒超时，确保有足够时间完成
         ]);
 
         return result;

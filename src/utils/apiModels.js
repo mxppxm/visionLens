@@ -47,36 +47,37 @@ export const callGeminiAPI = async (imageData, apiKey, prompt) => {
 };
 
 /**
- * 调用智谱 GLM-4V API (快速版)
+ * 调用豆包视觉理解模型 API
  * @param {string} imageData - Base64编码的图像数据
  * @param {string} apiKey - API密钥
  * @param {string} prompt - 分析提示
  * @returns {Promise<string>} API响应
  */
-export const callGLM4VAPI = async (imageData, apiKey, prompt) => {
+export const callDoubaoVisionAPI = async (imageData, apiKey, prompt) => {
     const payload = {
-        model: "glm-4v-plus",
+        model: "doubao-seed-1-6-250615",
         messages: [
             {
                 role: "user",
                 content: [
-                    {
-                        type: "text",
-                        text: prompt,
-                    },
                     {
                         type: "image_url",
                         image_url: {
                             url: `data:image/jpeg;base64,${imageData}`,
                         },
                     },
+                    {
+                        type: "text",
+                        text: prompt,
+                    },
                 ],
             },
         ],
-        temperature: 0.4,
+        temperature: 0.3,
+        top_p: 0.8,
     };
 
-    const API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
+    const API_URL = "https://ark.cn-beijing.volces.com/api/v3/chat/completions";
 
     const response = await fetch(API_URL, {
         method: "POST",
@@ -90,45 +91,46 @@ export const callGLM4VAPI = async (imageData, apiKey, prompt) => {
     if (!response.ok) {
         const errorText = await response.text();
         throw new Error(
-            `智谱 GLM-4V-Plus API 调用失败! Status: ${response.status}, Error: ${errorText}`
+            `豆包视觉理解模型 API 调用失败! Status: ${response.status}, Error: ${errorText}`
         );
     }
 
     const data = await response.json();
-    return parseGLMResponse(data, "GLM-4V");
+    return parseDoubaoResponse(data, "豆包视觉理解模型");
 };
 
 /**
- * 调用智谱 GLM-4.1V-FlashX API (推理版)
+ * 调用豆包 Lite 模型 API
  * @param {string} imageData - Base64编码的图像数据
  * @param {string} apiKey - API密钥
  * @param {string} prompt - 分析提示
  * @returns {Promise<string>} API响应
  */
-export const callGLMFlashXAPI = async (imageData, apiKey, prompt) => {
+export const callDoubaoLiteAPI = async (imageData, apiKey, prompt) => {
     const payload = {
-        model: "glm-4.1v-thinking-flashx",
+        model: "doubao-seed-1-6-250615",
         messages: [
             {
                 role: "user",
                 content: [
-                    {
-                        type: "text",
-                        text: prompt,
-                    },
                     {
                         type: "image_url",
                         image_url: {
                             url: `data:image/jpeg;base64,${imageData}`,
                         },
                     },
+                    {
+                        type: "text",
+                        text: prompt,
+                    },
                 ],
             },
         ],
         temperature: 0.4,
+        top_p: 0.9,
     };
 
-    const API_URL = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
+    const API_URL = "https://ark.cn-beijing.volces.com/api/v3/chat/completions";
 
     const response = await fetch(API_URL, {
         method: "POST",
@@ -142,125 +144,137 @@ export const callGLMFlashXAPI = async (imageData, apiKey, prompt) => {
     if (!response.ok) {
         const errorText = await response.text();
         throw new Error(
-            `智谱 GLM-4.1V-FlashX API 调用失败! Status: ${response.status}, Error: ${errorText}`
+            `豆包 Lite 模型 API 调用失败! Status: ${response.status}, Error: ${errorText}`
         );
     }
 
     const data = await response.json();
-    return parseGLMResponse(data, "GLM-4.1V-FlashX");
+    return parseDoubaoResponse(data, "豆包 Lite");
 };
 
 /**
- * 解析智谱API响应
+ * 调用豆包 Flash 模型 API
+ * @param {string} imageData - Base64编码的图像数据
+ * @param {string} apiKey - API密钥
+ * @param {string} prompt - 分析提示
+ * @returns {Promise<string>} API响应
+ */
+export const callDoubaoFlashAPI = async (imageData, apiKey, prompt) => {
+    const payload = {
+        model: "doubao-seed-1-6-flash-250715",
+        messages: [
+            {
+                role: "user",
+                content: [
+                    {
+                        type: "image_url",
+                        image_url: {
+                            url: `data:image/jpeg;base64,${imageData}`,
+                        },
+                    },
+                    {
+                        type: "text",
+                        text: prompt,
+                    },
+                ],
+            },
+        ],
+        temperature: 0.2,  // 更低温度，优化速度
+        top_p: 0.7,        // 更低top_p，优化速度
+    };
+
+    const API_URL = "https://ark.cn-beijing.volces.com/api/v3/chat/completions";
+
+    const response = await fetch(API_URL, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(
+            `豆包 Flash 模型 API 调用失败! Status: ${response.status}, Error: ${errorText}`
+        );
+    }
+
+    const data = await response.json();
+    return parseDoubaoResponse(data, "豆包 Flash");
+};
+
+/**
+ * 解析豆包API响应
  * @param {Object} data - API响应数据
  * @param {string} modelName - 模型名称
  * @returns {Object|string} 解析后的响应
  */
-export const parseGLMResponse = (data, modelName) => {
+export const parseDoubaoResponse = (data, modelName) => {
     const content = data.choices?.[0]?.message?.content || "未能获取答案。";
 
     try {
         // 清理可能的标记符和多余内容
-        let cleanContent = content
-            .replace(/<\|observation\|>/g, "")
-            .replace(/<\|thinking\|>/g, "")
-            .replace(/<\|\/thinking\|>/g, "")
-            .replace(/<\|reflection\|>/g, "")
-            .replace(/<\|\/reflection\|>/g, "")
-            .replace(/<\|begin_of_box\|>/g, "")
-            .replace(/<\|end_of_box\|>/g, "")
-            .replace(/<\|box_start\|>/g, "")
-            .replace(/<\|box_end\|>/g, "")
-            .replace(/```json\s*/g, "")
-            .replace(/```\s*/g, "")
-            .replace(/^.*?begin.*?\n?/i, "")
-            .replace(/\n?.*?end.*?$/i, "")
-            .replace(/^[^{]*/, "")
-            .replace(/[^}]*$/, "")
-            .trim();
+        let cleanContent = content.trim();
 
-        // 修复JSON中的引号问题
-        cleanContent = cleanContent
-            .replace(/"/g, '"')
-            .replace(/"/g, '"');
-
-        // 尝试修复JSON字符串中的引号嵌套问题
-        try {
-            JSON.parse(cleanContent);
-        } catch (e) {
-            // 尝试用正则提取question和answer的值
-            const questionMatch = cleanContent.match(
-                /"question"\s*:\s*"(.*?)(?=",\s*"answer")/s
-            );
-            const answerMatch = cleanContent.match(
-                /"answer"\s*:\s*"(.*?)(?="\s*})/s
-            );
-
-            if (questionMatch && answerMatch) {
-                let question = questionMatch[1]
-                    .replace(/^[""]/, "")
-                    .replace(/[""]$/, "")
-                    .replace(/\\"/g, '"');
-                let answer = answerMatch[1]
-                    .replace(/^[""]/, "")
-                    .replace(/[""]$/, "")
-                    .replace(/\\"/g, '"');
-
-                cleanContent = JSON.stringify({
-                    question: question,
-                    answer: answer,
-                });
-            }
-        }
-
-        // 如果还没找到有效的JSON格式，尝试用正则提取
-        if (!cleanContent.startsWith("{") || !cleanContent.endsWith("}")) {
-            const jsonMatches = [
-                /\{[^{}]*?"question"[^{}]*?"answer"[^{}]*?\}/s,
-                /\{[\s\S]*?"question"[\s\S]*?"answer"[\s\S]*?\}/,
-                /\{.*?"question".*?"answer".*?\}/s,
-            ];
-
-            for (const regex of jsonMatches) {
-                const match = content.match(regex);
-                if (match) {
-                    cleanContent = match[0];
-                    break;
+        // 检查是否已经是JSON格式
+        if (cleanContent.startsWith("{") && cleanContent.endsWith("}")) {
+            try {
+                const jsonResponse = JSON.parse(cleanContent);
+                if (jsonResponse.question && jsonResponse.answer) {
+                    return jsonResponse;
                 }
+            } catch (e) {
+                // 如果不是有效JSON，继续处理
             }
         }
 
-        const jsonResponse = JSON.parse(cleanContent);
-        if (jsonResponse.question && jsonResponse.answer) {
-            return jsonResponse;
+        // 尝试从内容中提取问题和答案
+        const lines = cleanContent.split('\n').filter(line => line.trim());
+
+        // 查找是否有明确的题目和答案结构
+        let question = "题目解析";
+        let answer = cleanContent;
+
+        // 如果内容包含明显的题目标识，尝试分离
+        if (cleanContent.includes('题目') || cleanContent.includes('问题')) {
+            const questionMatch = cleanContent.match(/(?:题目|问题)[:：]?\s*(.+?)(?=\n|答案|解答|$)/i);
+            if (questionMatch) {
+                question = questionMatch[1].trim();
+                answer = cleanContent.replace(questionMatch[0], '').trim();
+            }
         }
+
+        // 构造标准JSON响应
+        return {
+            question: question,
+            answer: answer
+        };
     } catch (error) {
-        console.warn("JSON解析失败，原始内容:", content);
+        console.warn(`${modelName} 响应解析失败，原始内容:`, content);
 
         // 检查是否是常见的错误消息
-        if (content.includes("无法处理该图像") || content.includes("抱歉")) {
+        if (content.includes("无法处理该图像") || content.includes("抱歉") || content.includes("无法识别")) {
             return {
                 question: "图像识别失败",
                 answer: "AI模型无法识别图像中的内容。建议：\n1. 确保图像清晰且包含题目\n2. 检查API Key是否正确配置\n3. 尝试重新拍照或切换其他模型",
             };
         }
 
-        if (content.includes("API") && content.includes("key")) {
+        if (content.includes("API") && (content.includes("key") || content.includes("Key"))) {
             return {
                 question: "API配置错误",
-                answer: "API Key配置有误，请检查设置中的API Key是否正确",
+                answer: "API Key配置有误，请检查设置中的火山引擎API Key是否正确",
             };
         }
-    }
 
-    // 如果内容只是观察标记或空白，返回错误信息
-    const strippedContent = content.replace(/<\|[^|]*\|>/g, "").trim();
-    if (!strippedContent || strippedContent.length < 10) {
+        // 返回原始内容
         return {
-            question: "模型响应异常",
-            answer: "模型只返回了观察标记，请尝试重新拍照或切换其他模型",
+            question: "题目解析",
+            answer: content
         };
     }
-
-    return content;
 };
+
+

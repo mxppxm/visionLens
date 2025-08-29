@@ -1087,7 +1087,7 @@ const App = () => {
   };
 
   // 创建超时Promise
-  const createTimeoutPromise = (timeout = 8000) => {
+  const createTimeoutPromise = (timeout = 10000) => {
     return new Promise((_, reject) => {
       setTimeout(() => {
         reject(new Error("API调用超时，请求已取消"));
@@ -1481,11 +1481,11 @@ const App = () => {
       }
     };
 
-    // 使用Promise.race实现8秒超时机制
+    // 使用Promise.race实现10秒超时机制
     try {
       const result = await Promise.race([
         apiCall(),
-        createTimeoutPromise(8000),
+        createTimeoutPromise(10000),
       ]);
 
       return result;
@@ -2630,7 +2630,16 @@ const App = () => {
             </div>
           )}
           {errorMessage && (
-            <p className="text-red-500 text-sm mt-2">{errorMessage}</p>
+            <div className="mt-2 p-3 bg-red-50 border border-red-200 rounded-lg">
+              <h4 className="text-sm font-medium text-red-800 mb-1">
+                {typeof errorMessage === "object" ? errorMessage.title : "错误"}
+              </h4>
+              <p className="text-red-600 text-sm">
+                {typeof errorMessage === "object"
+                  ? errorMessage.message
+                  : errorMessage}
+              </p>
+            </div>
           )}
           {!isLoading && !errorMessage && (
             <>

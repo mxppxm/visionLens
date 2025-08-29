@@ -30,10 +30,14 @@ const ApiKeyModal = ({
   // 当模态框打开时，加载当前API Key
   useEffect(() => {
     if (isOpen) {
-      // 智谱相关模型共享API Key
+      // 豆包相关模型共享API Key
       let keyModelId = selectedModel;
-      if (selectedModel === "glm_flashx" || selectedModel === "glm_4v") {
-        keyModelId = "glm";
+      if (
+        selectedModel === "doubao_vision" ||
+        selectedModel === "doubao_lite" ||
+        selectedModel === "doubao_flash"
+      ) {
+        keyModelId = "doubao";
       }
 
       const currentApiKey =
@@ -163,31 +167,41 @@ const ApiKeyModal = ({
               </p>
             )}
 
-            {(selectedModel === "glm_4v" || selectedModel === "glm_flashx") && (
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-3">
-                <h4 className="font-medium text-blue-900 mb-2">
-                  智谱AI模型说明：
+            {(selectedModel === "doubao_vision" ||
+              selectedModel === "doubao_lite" ||
+              selectedModel === "doubao_flash") && (
+              <div className="bg-orange-50 border border-orange-200 rounded-lg p-3 mb-3">
+                <h4 className="font-medium text-orange-900 mb-2">
+                  豆包大模型说明：
                 </h4>
-                <ul className="text-sm text-blue-800 space-y-1">
+                <ul className="text-sm text-orange-800 space-y-1">
                   <li>
-                    • <strong>GLM-4V-Plus (快速版)</strong>
-                    ：响应速度快，适合日常练习和简单题目
+                    • <strong>豆包模型 (高精度)</strong>
+                    ：使用 doubao-seed-1-6-250615，具备强大的图片理解与推理能力
                   </li>
                   <li>
-                    • <strong>GLM-4.1V-FlashX (推理版)</strong>
-                    ：深度推理，准确度更高，适合复杂题目和难题
+                    • <strong>豆包模型 (快速版)</strong>
+                    ：同样使用
+                    doubao-seed-1-6-250615，但采用优化参数配置，响应更快
                   </li>
-                  <li>• 两个模型共享同一个API Key</li>
+                  <li>
+                    • <strong>豆包 Flash 模型</strong>
+                    ：使用
+                    doubao-seed-1-6-flash-250715，超快响应速度，适合实时场景
+                  </li>
+                  <li className="text-xs mt-2">
+                    💡 三个配置共享同一个火山引擎API Key
+                  </li>
                 </ul>
-                <p className="text-sm text-blue-700 mt-2">
-                  如果你还没有 API Key，请访问{" "}
+                <p className="text-sm text-orange-700 mt-2">
+                  如果你还没有 API Key，请前往{" "}
                   <a
-                    href="https://bigmodel.cn/"
+                    href="https://console.volcengine.com/ark"
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-blue-600 hover:text-blue-800 underline"
+                    className="text-orange-600 hover:text-orange-800 underline"
                   >
-                    智谱AI开放平台
+                    火山引擎豆包大模型
                   </a>{" "}
                   获取。
                 </p>

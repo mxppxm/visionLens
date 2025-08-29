@@ -57,19 +57,20 @@ ${prompt}
  */
 export const optimizeAPIRequest = async (requestParams) => {
     try {
-        // 基于模型类型优化超时时间
+        // 基于模型类型优化超时时间（统一30秒，给API足够完成时间）
         const timeoutMap = {
-            'gemini': 10000,
-            'glm_4v': 12000,
-            'glm_flashx': 8000
+            'gemini': 30000,
+            'doubao_vision': 30000,
+            'doubao_lite': 30000,
+            'doubao_flash': 30000
         };
 
         // 优化图片大小限制
-        const imageSizeLimit = requestParams.model === 'glm_flashx' ? 4 * 1024 * 1024 : 20 * 1024 * 1024;
+        const imageSizeLimit = requestParams.model === 'doubao_lite' ? 10 * 1024 * 1024 : 20 * 1024 * 1024;
 
         return {
             ...requestParams,
-            timeout: timeoutMap[requestParams.model] || 8000,
+            timeout: timeoutMap[requestParams.model] || 30000,
             imageSizeLimit,
             retryAttempts: 2,
             optimizedPrompt: requestParams.prompt // 暂时保持原样，后续可以用v0优化
